@@ -102,6 +102,10 @@ class NAT (object):
     # proto means TCP or UDP
     self._used_ports = set() # (proto,port)
 
+    #Which NAT ports have we used for forwarding rules ?
+    self._forwarding = {} # (key=port, value=IP)
+    self._forwarding[55432] = IPAddr('192.168.0.1') ## adding/removing to this dictionary should be handled dynamically
+
     # Flow records indexed in both directions
     # match -> Record
     self._record_by_outgoing = {}
@@ -285,7 +289,7 @@ class NAT (object):
       match2.dl_dst = None # See note below
       record = self._record_by_incoming.get(match2)
       if record is None:
-        if match.tp_dst == 55432:
+        if tcpp.dstport in self._forwarding: #match.tp_dst == 55432:   ##if port can be found in dictionnary of forwarding rules
             #Port forwarding rule --incoming
             fm = of.ofp_flow_mod()
             log.debug("ADDING MY FLOW")
@@ -296,16 +300,16 @@ class NAT (object):
             fm.match.in_port = self._outside_portno
             fm.match.nw_src = ipp.srcip
             fm.match.nw_dst = self.outside_ip
-            fm.match.tp_dst = 55432  ##tcpp.tp_dst  the one that corresponds to the given ip
+            fm.match.tp_dst = 55432  ##  the one that corresponds to the given ip
             fm.match.tp_src = tcpp.srcport
             fm.match.dl_src = packet.src
             fm.match.dl_dst = self._outside_eth
 
             fm.actions.append(of.ofp_action_dl_addr.set_src(EthAddr('aa:47:31:6b:86:e9'))) #replace with more generic way
             fm.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr('aa:47:32:e7:12:20'))) #replace with arp request
-            fm.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr('192.168.0.1')))       # correspondance port - ip
+            fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))   #(IPAddr('192.168.0.1')))
             fm.actions.append(of.ofp_action_nw_addr.set_src(IPAddr('192.168.0.2')))
-            fm.actions.append(of.ofp_action_tp_port.set_src(55432))
+            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport)) #(55432))
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
             #if record.fake_srcport != record.real_srcport:
@@ -330,18 +334,18 @@ class NAT (object):
             fm.match.in_port = 50
             fm.match.dl_src = EthAddr('aa:47:32:e7:12:20')
             fm.match.dl_dst = EthAddr('aa:47:31:6b:86:e9')
-            fm.match.nw_src = IPAddr('192.168.0.1')
-            fm.match.nw_dst = IPAddr('192.168.0.2')#ipp.srcip
-            fm.match.tp_dst = 55432 #tcpp.srcport
+            fm.match.nw_src = self._forwarding[tcpp.dstport]   #IPAddr('192.168.0.1')
+            fm.match.nw_dst = IPAddr('192.168.0.2') #should be replaced by ip_from_port[50] 50 --
+            fm.match.tp_dst = tcpp.dstport #55432
             fm.match.tp_src = 22
 
-            fm.actions.append(of.ofp_action_dl_addr.set_src(packet.dst)) #replace with more generic way
+            fm.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
             fm.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
-            fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))       # correspondance port - ip
+            fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
             fm.actions.append(of.ofp_action_nw_addr.set_dst(ipp.srcip))
             fm.actions.append(of.ofp_action_tp_port.set_dst(tcpp.srcport))
-            fm.actions.append(of.ofp_action_tp_port.set_src(55432))
-            fm.actions.append(of.ofp_action_output(port = 53))
+            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))
+            fm.actions.append(of.ofp_action_output(port = self._outside_portno))  #53
             log.debug("added outgoing fw flow")
             event.connection.send(fm)
             return
