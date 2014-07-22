@@ -127,7 +127,6 @@ class ARPRequest (Event):
     self.ip = arpp.protosrc
     self.reply = None # Set to desired EthAddr
 
-
 class ARPReply (Event):
   @property
   def dpid (self):
@@ -185,7 +184,7 @@ class ARPHelper (EventMixin):
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
-
+    log.debug("dpid for this shit is %s",dpid)
     a = packet.find('arp')
     if not a: return
 
@@ -200,12 +199,14 @@ class ARPHelper (EventMixin):
                 a.protosrc, a.protodst)
 
       if self.use_port_mac:
+        log.debug("CHECK")
         src_mac = event.connection.ports[inport].hw_addr
       else:
         src_mac = event.connection.eth_addr
       ev = ARPRequest(event.connection, a, src_mac,
                       self.eat_packets, inport)
       self.raiseEvent(ev)
+      log.debug("LALAL")
       if ev.reply is not None:
         r = arp()
         r.hwtype = a.hwtype
@@ -216,7 +217,7 @@ class ARPHelper (EventMixin):
         r.hwdst = a.hwsrc
         r.protodst = a.protosrc
         r.protosrc = a.protodst
-        r.hwsrc = EthAddr(ev.reply)
+        r.hwsrc = EthAddr(ev.reply_from)
         e = ethernet(type=packet.type, src=ev.reply_from, dst=a.hwsrc)
         e.payload = r
         log.debug("%s answering ARP for %s" % (dpid_to_str(dpid),
@@ -240,6 +241,6 @@ class ARPHelper (EventMixin):
     return EventHalt if self.eat_packets else None
 
 
-def launch (no_flow=False, eat_packets=True, use_port_mac = False):
+def launch (no_flow=False, eat_packets=True, use_port_mac = True):
   core.registerNew(ARPHelper, str_to_bool(no_flow), str_to_bool(eat_packets),
                    str_to_bool(use_port_mac))
