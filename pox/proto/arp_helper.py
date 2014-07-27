@@ -199,14 +199,12 @@ class ARPHelper (EventMixin):
                 a.protosrc, a.protodst)
 
       if self.use_port_mac:
-        log.debug("CHECK")
         src_mac = event.connection.ports[inport].hw_addr
       else:
         src_mac = event.connection.eth_addr
       ev = ARPRequest(event.connection, a, src_mac,
                       self.eat_packets, inport)
       self.raiseEvent(ev)
-      log.debug("LALAL")
       if ev.reply is not None:
         r = arp()
         r.hwtype = a.hwtype
