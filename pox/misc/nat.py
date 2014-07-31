@@ -46,6 +46,7 @@ from pox.lib.recoco import Timer
 import pox.lib.recoco as recoco
 
 import pox.openflow.libopenflow_01 as of
+import pox.host_tracker
 from pox.proto.dhcpd import DHCPD, SimpleAddressPool
 
 import time
@@ -545,7 +546,7 @@ def launch (dpid, outside_port, outside_ip = '10.0.0.2',
 
   import pox.proto.arp_helper as ah
   ah.launch(use_port_mac = True)
-
+  pox.host_tracker.launch()
   dpid = str_to_dpid(dpid)
   inside_ip = IPAddr(inside_ip)
   outside_ip = IPAddr(outside_ip)
