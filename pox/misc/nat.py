@@ -46,6 +46,7 @@ from pox.lib.recoco import Timer
 import pox.lib.recoco as recoco
 
 import pox.openflow.libopenflow_01 as of
+import pox.openflow.discovery
 import pox.host_tracker
 from pox.proto.dhcpd import DHCPD, SimpleAddressPool
 
@@ -86,34 +87,33 @@ class NAT (object):
   def __init__ (self, inside_ip, outside_ip, gateway_ip, dns_ip, outside_port,
       dpid, subnet = None):
 
+
     self.inside_ip = inside_ip
     self.outside_ip = outside_ip
     self.gateway_ip = gateway_ip
-    #this should become self.gateway_ips set (subnet, vlan/mac-prefix)
-    #or dictionary vlan_id - subnet
-    #dictionnary subnet - inside ip
     self.dns_ip = dns_ip # Or None
     self.outside_port = outside_port
     self.dpid = dpid
     self.subnet = subnet
 
     self._outside_portno = None
-    self._host_eth = None
     self._gateway_eth = None
     self._connection = None
+
+    #Information about machines in the network
+    self._mac_to_port = {}  # to reach x host we need to send traffic through port y
+    self._ip_to_mac = {}    # host x's mac is tied with this ip
 
     # Which NAT ports have we used?
     # proto means TCP or UDP
     self._used_ports = set() # (proto,port)
 
-    #Which hosts are attached to this router ?
-    self._hosts = set()
-    self._hosts.add(IPAddr('192.168.0.1'))
-
     #Which NAT ports have we used for forwarding rules ?
+    #Should be called after HostEvent.
     self._forwarding = {} # (key=port, value=IP)
     self._forwarding[55432] = IPAddr('192.168.0.1') ## adding/removing to this dictionary should be handled dynamically
 
+    #Refers to IPs attached to the router and their respective ports
     self.ip_to_port = {}
     self.ip_to_port[IPAddr('192.168.0.2')] = 50
 
@@ -124,6 +124,16 @@ class NAT (object):
     self._record_by_forwarding = {}
 
     core.listen_to_dependencies(self)
+
+  def _handle_core_ComponentRegistered(self,event):
+    if event.name == "host_tracker":
+      event.component.addListenerByName("HostEvent",
+              self._handle_host_tracker_HostEvent)
+
+  def _handle_host_tracker_HostEvent(self,event):
+    self._mac_to_port[event.entry.macaddr]=event.entry.port
+    for key in event.entry.ipAddrs:
+        self._ip_to_mac[key] = event.entry.macaddr
 
   def _all_dependencies_met (self):
     log.debug('Trying to start...')
@@ -244,19 +254,16 @@ class NAT (object):
     event.connection.send(msg)
 
     log.debug("probably works")
-    #THA EXW LISTA APO GATEWAY_IPS KAI THA KANW ARP REQUESTS GIA NA VRISKW TIS IP
+
 
   def _handle_PacketIn (self, event):
     if self._outside_eth is None: return
 
-    #print
     print "PACKET",event.connection.ports[event.port].name,event.port,
     print self.outside_port, self.make_match(event.ofp)
-
     incoming = event.port == self._outside_portno
     log.debug("event.port is %s self._outside_portno is %s",event.port,self._outside_portno)
     if self._gateway_eth is None:
-      # Need to find gateway MAC -- send an ARP
       self._arp_for_gateway()
       return
 
@@ -264,6 +271,9 @@ class NAT (object):
     dns_hack = False
 
     # TCP UDP and ICMP handling
+    tcpp = False
+    udpp = False
+    icmpp = False
     tcpp = packet.find('tcp')
     if tcpp:
         ipp=tcpp.prev
@@ -300,15 +310,16 @@ class NAT (object):
       match2.dl_dst = None # See note below
       record = self._record_by_incoming.get(match2)
       if record is None:
-        #if icmpp:
-        #    if ipp.dstip == self.outside_ip:
-        #        self.respond_to_icmp(event)
-        #        return
+        if icmpp:
+            if ipp.dstip == self.outside_ip:
+                self.respond_to_icmp(event)
+                return
         #if icmpp: host discovery find host IP -- keep it for later use in forwarding rule
         #          rule for forwarding icmp packets to whatever host they need to be sent
         #          find port ip (.2 of each subnet) and port no and associate the two dictionary ip -- > port
         #          that will make port forwarding rules much more generic
-        if tcpp.dstport in self._forwarding: #match.tp_dst == 55432:   ##if port can be found in dictionnary of forwarding rules
+        if tcpp and tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
+
             #Port forwarding rule --incoming
             fm = of.ofp_flow_mod()
             log.debug("ADDING MY FLOW")
@@ -325,10 +336,10 @@ class NAT (object):
             fm.match.dl_dst = self._outside_eth
 
             fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[50].hw_addr))  #(EthAddr('aa:47:31:6b:86:e9')))
-            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._host_eth)) # need to make this better - ARP CACHE ?
+            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]])) #self._host_eth
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
-            fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))#(IPAddr('192.168.0.2')))
-            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport)) #(55432))
+            fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip)) #(IPAddr('192.168.0.2')))
+            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))  #(55432))
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
             #if record.fake_srcport != record.real_srcport:
@@ -351,7 +362,7 @@ class NAT (object):
 
             fm.match=match.flip()
             fm.match.in_port = 50
-            fm.match.dl_src = self._host_eth   #EthAddr('aa:47:32:e7:12:20')
+            fm.match.dl_src = self._ip_to_mac[self._forwarding[tcpp.dstport]] #self._host_eth   #EthAddr('aa:47:32:e7:12:20')
             fm.match.dl_dst = self._connection.ports[50].hw_addr #EthAddr('aa:47:31:6b:86:e9')
             fm.match.nw_src = self._forwarding[tcpp.dstport]   #IPAddr('192.168.0.1')
             fm.match.nw_dst = self.inside_ip #IPAddr('192.168.0.2')
@@ -386,11 +397,11 @@ class NAT (object):
         print ipp
         if ipp.dstip == self.inside_ip:
           self.respond_to_icmp(event)
-      return ##########
+          return
+      ##### return ##########
       record = self._record_by_outgoing.get(match)
       if record is None:
         record = Record()
-
         record.real_srcport = tcpp.srcport
         print tcpp.srcport
         record.fake_srcport = self._pick_port(match)
@@ -498,7 +509,7 @@ class NAT (object):
     # Need to find gateway MAC -- send an ARP
     self._arp_for_gateway()
     # Need to find host MAC -- send an ARP
-    self._arp_for_host(self._forwarding[55432])
+    #self._arp_for_host(self._forwarding[55432])
 
   def _arp_for_gateway (self):
     log.debug('Attempting to ARP for gateway (%s)', self.gateway_ip)
@@ -506,19 +517,16 @@ class NAT (object):
                                       ip = self.gateway_ip,
                                       port = self._outside_portno,
                                       src_ip = self.outside_ip)
-  def _arp_for_host(self, ip):
-      log.debug("Attempting to ARP for host (%s)", ip)
-      self._ARPHelper_.send_arp_request(self._connection,
-                                        ip = ip,
-                                        port=self.ip_to_port[self.inside_ip],
-                                        src_ip = self.inside_ip)
+#  def _arp_for_host(self, ip):
+#      log.debug("Attempting to ARP for host (%s)", ip)
+#      self._ARPHelper_.send_arp_request(self._connection,
+#                                        ip = ip,
+#                                        port=self.ip_to_port[self.inside_ip],
+#                                        src_ip = self.inside_ip)
 
   def _handle_ARPHelper_ARPReply (self, event):
     if event.dpid != self.dpid: return
-    #if event.port != self._outside_portno: return
-    if event.port == self.ip_to_port[self.inside_ip]:
-      self._host_eth = event.reply.hwsrc
-      print self._host_eth
+    if event.port != self._outside_portno: return
     if event.reply.protosrc == self.gateway_ip:
       self._gateway_eth = event.reply.hwsrc
       log.info("Gateway %s is %s", self.gateway_ip, self._gateway_eth)
@@ -546,15 +554,14 @@ def launch (dpid, outside_port, outside_ip = '10.0.0.2',
 
   import pox.proto.arp_helper as ah
   ah.launch(use_port_mac = True)
+  pox.openflow.discovery.launch()
   pox.host_tracker.launch()
   dpid = str_to_dpid(dpid)
   inside_ip = IPAddr(inside_ip)
   outside_ip = IPAddr(outside_ip)
   dns_ip = IPAddr('8.8.8.8')
   gateway_ip = IPAddr('10.0.0.3')
-
   log.debug('Starting NAT')
 
   n = NAT(inside_ip, outside_ip, gateway_ip, dns_ip, outside_port, dpid)
-
   core.register(n)

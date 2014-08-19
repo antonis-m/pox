@@ -309,6 +309,7 @@ class host_tracker (EventMixin):
       ipEntry = IpEntry(hasARP)
       macEntry.ipAddrs[pckt_srcip] = ipEntry
       log.info("Learned %s got IP %s", str(macEntry), str(pckt_srcip) )
+      self.raiseEventNoErrors(HostEvent, macEntry, join=True) ###
     if hasARP:
       ipEntry.pings.received()
 
