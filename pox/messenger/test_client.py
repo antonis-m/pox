@@ -85,6 +85,7 @@ def main (addr = "127.0.0.1", port = 7790):
         continue
       if cur_chan is not None and 'CHANNEL' not in m:
         m['CHANNEL'] = cur_chan
+        print cur_chan
       m = json.dumps(m)
       sock.send(m)
     except EOFError:
