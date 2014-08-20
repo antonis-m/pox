@@ -103,19 +103,19 @@ class NAT (object):
     #Information about machines in the network
     self._mac_to_port = {}  # to reach x host we need to send traffic through port y
     self._ip_to_mac = {}    # host x's mac is tied with this ip
+    self._ip_to_port = {}   # to reach x host we need to send traffic through port y
 
     # Which NAT ports have we used?
     # proto means TCP or UDP
     self._used_ports = set() # (proto,port)
 
     #Which NAT ports have we used for forwarding rules ?
-    #Should be called after HostEvent.
     self._forwarding = {} # (key=port, value=IP)
-    self._forwarding[55432] = IPAddr('192.168.0.1') ## adding/removing to this dictionary should be handled dynamically
+    #self._forwarding[55432] = IPAddr('192.168.0.1') ## adding/removing to this dictionary should be handled dynamically
 
     #Refers to IPs attached to the router and their respective ports
-    self.ip_to_port = {}
-    self.ip_to_port[IPAddr('192.168.0.2')] = 50
+    #self.ip_to_port = {}
+    #self.ip_to_port[IPAddr('192.168.0.2')] = 50
 
     # Flow records indexed in both directions
     # match -> Record
@@ -132,8 +132,10 @@ class NAT (object):
 
   def _handle_host_tracker_HostEvent(self,event):
     self._mac_to_port[event.entry.macaddr]=event.entry.port
+    self._forwarding[55432] = IPAddr('192.168.0.1') ## adding/removing to this dictionary should be handled dynamically
     for key in event.entry.ipAddrs:
         self._ip_to_mac[key] = event.entry.macaddr
+        self._ip_to_port[key]= event.entry.port
 
   def _all_dependencies_met (self):
     log.debug('Trying to start...')
@@ -335,7 +337,8 @@ class NAT (object):
             fm.match.dl_src = packet.src
             fm.match.dl_dst = self._outside_eth
 
-            fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[50].hw_addr))  #(EthAddr('aa:47:31:6b:86:e9')))
+            fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._ip_to_port \
+                    [self._forwarding[tcpp.dstport]]].hw_addr)) # [50].hw_addr))
             fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]])) #self._host_eth
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
             fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip)) #(IPAddr('192.168.0.2')))
@@ -345,7 +348,7 @@ class NAT (object):
             #if record.fake_srcport != record.real_srcport:
             #   fm.actions.append(of.ofp_action_tp_port.set_dst(record.real_srcport))
 
-            fm.actions.append(of.ofp_action_output(port = 50)) #replace with more generic way
+            fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]])) #50))
 
             #record.port_forw_match = self.strip_match(fm.match)
             #record.port_forw_fm = fm
@@ -361,9 +364,9 @@ class NAT (object):
             fm.hard_timeout = FLOW_TIMEOUT
 
             fm.match=match.flip()
-            fm.match.in_port = 50
+            fm.match.in_port = self._ip_to_port[self._forwarding[tcpp.dstport]] #50
             fm.match.dl_src = self._ip_to_mac[self._forwarding[tcpp.dstport]] #self._host_eth   #EthAddr('aa:47:32:e7:12:20')
-            fm.match.dl_dst = self._connection.ports[50].hw_addr #EthAddr('aa:47:31:6b:86:e9')
+            fm.match.dl_dst = self._connection.ports[self._ip_to_port[self._forwarding[tcpp.dstport]]].hw_addr#EthAddr('aa:47:31:6b:86:e9')
             fm.match.nw_src = self._forwarding[tcpp.dstport]   #IPAddr('192.168.0.1')
             fm.match.nw_dst = self.inside_ip #IPAddr('192.168.0.2')
             fm.match.tp_dst = tcpp.dstport #55432
