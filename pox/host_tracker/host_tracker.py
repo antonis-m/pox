@@ -210,7 +210,7 @@ class host_tracker (EventMixin):
   """
   _eventMixin_events = set([HostEvent])
 
-  def __init__ (self, ping_src_mac = None, install_flow = True,
+  def __init__ (self, ping_src_mac = None , install_flow = True,
       eat_packets = True):
 
     if ping_src_mac is None:
@@ -314,6 +314,7 @@ class host_tracker (EventMixin):
       ipEntry.pings.received()
 
   def _handle_openflow_ConnectionUp (self, event):
+
     if not self.install_flow: return
 
     log.debug("Installing flow for ARP ping responses")

@@ -184,7 +184,6 @@ class ARPHelper (EventMixin):
     dpid = event.connection.dpid
     inport = event.port
     packet = event.parsed
-    log.debug("dpid for this shit is %s",dpid)
     a = packet.find('arp')
     if not a: return
 
