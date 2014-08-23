@@ -1,4 +1,5 @@
 # Copyright 2013 James McCauley
+# Copyright 2014 Antonis Manousis
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -351,10 +352,6 @@ class NAT (object):
             if ipp.dstip == self.outside_ip:
                 self.respond_to_icmp(event)
                 return
-        #if icmpp: host discovery find host IP -- keep it for later use in forwarding rule
-        #          rule for forwarding icmp packets to whatever host they need to be sent
-        #          find port ip (.2 of each subnet) and port no and associate the two dictionary ip -- > port
-        #          that will make port forwarding rules much more generic
         if tcpp and tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
 
             #Port forwarding rule --incoming
@@ -362,7 +359,6 @@ class NAT (object):
             log.debug("ADDING MY FLOW")
             fm.flags |= of.OFPFF_SEND_FLOW_REM
             fm.hard_timeout = FLOW_TIMEOUT
-
             fm.match=match.flip()
             fm.match.in_port = self._outside_portno
             fm.match.nw_src = ipp.srcip
@@ -397,7 +393,6 @@ class NAT (object):
             log.debug("Add pf outgoing flow")
             fm.flags |= of.OFPFF_SEND_FLOW_REM
             fm.hard_timeout = FLOW_TIMEOUT
-
             fm.match=match.flip()
             fm.match.in_port = self._ip_to_port[self._forwarding[tcpp.dstport]]
             fm.match.dl_src = self._ip_to_mac[self._forwarding[tcpp.dstport]]
@@ -440,10 +435,9 @@ class NAT (object):
         elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
           fm = of.ofp_flow_mod()
+          fm.data = event.ofp
           fm.flags |= of.OFPFF_SEND_FLOW_REM
           fm.idle_timeout = 5
-          fm.hard_timeout = 10
-
           fm.match = match.clone()
           fm.match.in_port = event.port
           fm.actions.append(of.ofp_action_dl_addr.set_src(self._outside_eth))
@@ -451,7 +445,6 @@ class NAT (object):
           fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
           fm.actions.append(of.ofp_action_output(port=self._outside_portno))
           event.connection.send(fm)
-
           log.debug("Added outgoing icmp flow")
           #for key in self._icmp_seq:
           #    if self._icmp_seq[key] == ipp.srcip:
@@ -472,7 +465,6 @@ class NAT (object):
         fm = of.ofp_flow_mod()
         fm.flags |= of.OFPFF_SEND_FLOW_REM
         fm.hard_timeout = FLOW_TIMEOUT
-
         fm.match = match.flip()
         fm.match.in_port = self._outside_portno
         fm.match.nw_dst = self.outside_ip
