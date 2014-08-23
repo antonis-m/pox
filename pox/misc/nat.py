@@ -29,6 +29,7 @@ in-band control with something like:
 
 Please submit improvements. :)
 """
+from threading import Timer
 from time import *
 from pox.core import core
 import pox
@@ -112,6 +113,9 @@ class NAT (object):
     #Which NAT ports have we used for forwarding rules ?
     self._forwarding = {} # (key=port, value=IP)
 
+    #Match ICMP seq numbers to IPs
+    self._icmp_seq = {}
+
     # Flow records indexed in both directions
     # match -> Record
     self._record_by_outgoing = {}
@@ -164,6 +168,9 @@ class NAT (object):
 
     if dead and not self._record_by_outgoing:
       log.debug("All flows expired")
+
+  def _remove_entry(self, dic, key):
+      del dic[key]
 
   def _is_local (self, ip):
     if ip.is_multicast: return True
@@ -245,6 +252,7 @@ class NAT (object):
 
   def respond_to_icmp(self,event):
     packet=event.parsed
+    icmp_rec = packet.find('echo')
 
     #Create ICMP ECHO REPLY
     icmp = pkt.icmp()
@@ -254,13 +262,21 @@ class NAT (object):
     #Wrap it in an IP packet
     ipp = pkt.ipv4()
     ipp.protocol = ipp.ICMP_PROTOCOL
-    ipp.srcip = packet.find('ipv4').dstip
-    ipp.dstip = packet.find('ipv4').srcip
+    if icmp_rec.id not in self._icmp_seq:
+      ipp.srcip = packet.find('ipv4').dstip
+      ipp.dstip = packet.find('ipv4').srcip
+    else:
+      ipp.srcip = packet.find('ipv4').srcip
+      ipp.dstip = IPAddr(self._icmp_seq[icmp_rec.id])
 
     #Wrap it in an Ethernet frame
     e = pkt.ethernet()
-    e.src = packet.dst
-    e.dst = packet.src
+    if icmp_rec.id not in self._icmp_seq:
+      e.src = packet.dst
+      e.dst = packet.src
+    else:
+      e.dst = EthAddr(self._ip_to_mac[self._icmp_seq[icmp_rec.id]])
+      e.src = EthAddr(self._connection.ports[self._mac_to_port[e.dst]].hw_addr)
     e.type = e.IP_TYPE
 
     ipp.payload=icmp
@@ -268,7 +284,10 @@ class NAT (object):
 
     #Send
     msg = of.ofp_packet_out()
-    msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+    if icmp_rec.id not in self._icmp_seq:
+      msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+    else:
+      msg.actions.append(of.ofp_action_output(port = self._mac_to_port[e.dst]))
     msg.data = e.pack()
     msg.in_port = event.port
     event.connection.send(msg)
@@ -418,9 +437,28 @@ class NAT (object):
         if ipp.dstip == self.inside_ip:
           self.respond_to_icmp(event)
           return
-        elif not self._is_local(ipp.dstip):
-          #add Logic for mangling icmp packets
+        elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
+          #Logic for mangling outgoing icmp
+          fm = of.ofp_flow_mod()
+          fm.flags |= of.OFPFF_SEND_FLOW_REM
+          fm.idle_timeout = 5
+          fm.hard_timeout = 10
+
+          fm.match = match.clone()
+          fm.match.in_port = event.port
+          fm.actions.append(of.ofp_action_dl_addr.set_src(self._outside_eth))
+          fm.actions.append(of.ofp_action_dl_addr.set_dst(self._gateway_eth))
+          fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
+          fm.actions.append(of.ofp_action_output(port=self._outside_portno))
+          event.connection.send(fm)
+
+          log.debug("Added outgoing icmp flow")
+          #for key in self._icmp_seq:
+          #    if self._icmp_seq[key] == ipp.srcip:
+          #        del self._icmp_seq[key]
+          self._icmp_seq[icmpp.id] = ipp.srcip
           return
+
       record = self._record_by_outgoing.get(match)
       if record is None:
         record = Record()
