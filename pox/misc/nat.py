@@ -138,10 +138,10 @@ class NAT (object):
             print "need to delete old port for port forwarding"
             for fport in self._forwarding:
                 if self._forwarding[fport] == key:
-                    self._forwarding.remove(fport)
+                    #use dictionary comprehension instead.
+                    del self._forwarding[fport]
                     self._used_ports.remove(('tcp',fport))
         self._forwarding[self._pick_forwarding_port()] = IPAddr(key)
-        #self._forwarding[55432] = IPAddr(key)  #('192.168.0.1')
         self._ip_to_mac[key] = event.entry.macaddr
         self._ip_to_port[key]= event.entry.port
 
@@ -251,10 +251,41 @@ class NAT (object):
   def make_match (o):
     return NAT.strip_match(of.ofp_match.from_packet(o))
 
+  def forward_icmp(self,event):
+    packet = event.parsed
+    icmp_rec = packet.find('echo')
+    #Create ICMP ECHO REQUEST
+    icmp=pkt.icmp()
+    icmp.type = pkt.TYPE_ECHO_REQUEST
+    icmp.payload = packet.find('icmp').payload
+
+    #Wrap it in an IP packet
+    ipp = pkt.ipv4()
+    ipp.protocol = ipp.ICMP_PROTOCOL
+    ipp.srcip = self.outside_ip
+    ipp.dstip = packet.find('ipv4').dstip
+
+    #Wrap it in an Ethernet frame
+    e = pkt.ethernet()
+    e.dst = self._gateway_eth  #EthAddr(self._ip_to_mac[self._icmp_seq[icmp_rec.id]])
+    e.src = self._outside_eth #EthAddr(self._connection.ports[self._mac_to_port[e.dst]].hw_addr)
+    e.type = e.IP_TYPE
+
+    ipp.payload=icmp
+    e.payload = ipp
+
+    #Send
+    msg = of.ofp_packet_out()
+    msg.actions.append(of.ofp_action_output(port = self._outside_portno))
+    msg.data = e.pack()
+    msg.in_port = event.port
+    event.connection.send(msg)
+
   def respond_to_icmp(self,event):
     packet=event.parsed
     icmp_rec = packet.find('echo')
-
+    print "icmp id " + str(icmp_rec.id)
+    print self._icmp_seq
     #Create ICMP ECHO REPLY
     icmp = pkt.icmp()
     icmp.type = pkt.TYPE_ECHO_REPLY
@@ -429,27 +460,15 @@ class NAT (object):
         print icmpp.id
         print icmpp.seq
         print ipp
-        if ipp.dstip == self.inside_ip:
+        if ipp.dstip == self.inside_ip or ipp.dstip == self.outside_ip:
           self.respond_to_icmp(event)
           return
         elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
-          fm = of.ofp_flow_mod()
-          fm.data = event.ofp
-          fm.flags |= of.OFPFF_SEND_FLOW_REM
-          fm.idle_timeout = 5
-          fm.match = match.clone()
-          fm.match.in_port = event.port
-          fm.actions.append(of.ofp_action_dl_addr.set_src(self._outside_eth))
-          fm.actions.append(of.ofp_action_dl_addr.set_dst(self._gateway_eth))
-          fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
-          fm.actions.append(of.ofp_action_output(port=self._outside_portno))
-          event.connection.send(fm)
-          log.debug("Added outgoing icmp flow")
-          #for key in self._icmp_seq:
-          #    if self._icmp_seq[key] == ipp.srcip:
-          #        del self._icmp_seq[key]
+          #first delete stale sequence numbers - this only allows one session to ping
+          #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
           self._icmp_seq[icmpp.id] = ipp.srcip
+          self.forward_icmp(event)
           return
 
       record = self._record_by_outgoing.get(match)
@@ -542,12 +561,6 @@ class NAT (object):
   def _start (self, connection):
     self._connection = connection
     self._outside_portno = connection.ports[self.outside_port].port_no
-
-    #drop incoming traffic - should add logic for port forwarding
-    #fm = of.ofp_flow_mod()
-    #fm.match.in_port = self._outside_portno
-    #fm.priority = 1
-    #connection.send(fm)
 
     #process incoming traffic - to be processed by controller
     fm = of.ofp_flow_mod()

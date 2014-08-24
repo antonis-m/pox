@@ -222,8 +222,8 @@ class host_tracker (EventMixin):
 
     # The following tables should go to Topology later
     self.entryByMAC = {}
-    self._t = Timer(timeoutSec['timerInterval'],
-                    self._check_timeouts, recurring=True)
+    #self._t = Timer(timeoutSec['timerInterval'],
+    #                self._check_timeouts, recurring=True)
 
     # Listen to openflow with high priority if we want to eat our ARP replies
     listen_args = {}
