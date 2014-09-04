@@ -49,6 +49,7 @@ import pox.lib.recoco as recoco
 
 import pox.openflow.libopenflow_01 as of
 import pox.openflow.discovery
+import pox.messenger
 import pox.host_tracker
 from pox.proto.dhcpd import DHCPD, SimpleAddressPool
 
@@ -126,9 +127,24 @@ class NAT (object):
     core.listen_to_dependencies(self)
 
   def _handle_core_ComponentRegistered(self,event):
+    print event.name
     if event.name == "host_tracker":
       event.component.addListenerByName("HostEvent",
               self._handle_host_tracker_HostEvent)
+    elif event.name == "messenger":
+      event.component.addListenerByName("MessengerEvent",
+              self.__handle_messenger_MessengerEvent)
+
+  def __handle_messenger_MessengerEvent(self, event):
+      print event.port
+      #if event.join == True:
+      #    self._forwarding[event.port] = event.ip
+      #elif event.leave == True
+      #    del self._forwarding[event.port]
+      #### TRACK OVS PORT FOR THIS NIC
+      #### self._mac_to_port[event.mac] = port
+      #### self._ip_to_mac...
+      #### self._ip_to_port...
 
   def _handle_host_tracker_HostEvent(self,event):
     self._mac_to_port[event.entry.macaddr]=event.entry.port
@@ -400,11 +416,11 @@ class NAT (object):
             fm.match.dl_dst = self._outside_eth
 
             fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._ip_to_port \
-                    [self._forwarding[tcpp.dstport]]].hw_addr)) # [50].hw_addr))
-            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]])) #self._host_eth
+                    [self._forwarding[tcpp.dstport]]].hw_addr))
+            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
-            fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip)) #(IPAddr('192.168.0.2')))
-            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))  #(55432))
+            fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
+            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
             #if record.fake_srcport != record.real_srcport:

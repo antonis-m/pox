@@ -86,7 +86,6 @@ class MessengerExample (object):
   def _all_dependencies_met (self):
     # Set up the chat channel
     chat_channel = core.MessengerNexus.get_channel("chat")
-    print "chat channel set"
     def handle_chat (event, msg):
       m = str(msg.get("msg"))
       chat_channel.send({"msg":str(event.con) + " says " + m})
@@ -94,7 +93,6 @@ class MessengerExample (object):
 
     # Set up the time channel...
     time_channel = core.MessengerNexus.get_channel("time")
-    print "time channel set"
     import time
     def timer ():
       time_channel.send({'msg':"It's " + time.strftime("%I:%M:%S %p")})
