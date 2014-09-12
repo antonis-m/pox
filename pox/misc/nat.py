@@ -65,12 +65,11 @@ class Record (object):
     self.touch()
     self.outgoing_match = None
     self.incoming_match = None
-    self.port_forw_match = None
     self.real_srcport = None
     self.fake_srcport = None
+    self.fake_dstport = None
     self.outgoing_fm = None
     self.incoming_fm = None
-    self.port_forw_fm = None
 
   @property
   def expired (self):
@@ -122,7 +121,7 @@ class NAT (object):
     # match -> Record
     self._record_by_outgoing = {}
     self._record_by_incoming = {}
-    self._record_by_forwarding = {}
+#    self._record_by_forwarding = {}
 
     core.listen_to_dependencies(self)
 
@@ -180,7 +179,7 @@ class NAT (object):
     for r in dead:
       del self._record_by_outgoing[r.outgoing_match]
       del self._record_by_incoming[r.incoming_match]
-      del self._record_by_forwarding[r.port_forw_match]
+      #edw thelei veltiwsi i diagrafi fake_srcport i fake dstport?
       self._used_ports.remove((r.outgoing_match.nw_proto,r.fake_srcport))
 
     if dead and not self._record_by_outgoing:
@@ -394,12 +393,20 @@ class NAT (object):
       match2 = match.clone()
       match2.dl_dst = None # See note below
       record = self._record_by_incoming.get(match2)
+      for key in self._record_by_incoming:
+          print key
+          print self._record_by_incoming[key]
       if record is None:
         if icmpp:
             if ipp.dstip == self.outside_ip:
                 self.respond_to_icmp(event)
                 return
-        if tcpp and tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
+        if tcpp:
+          if tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
+            record = Record()
+            record.real_srcport = tcpp.srcport
+            record.fake_srcport = tcpp.dstport
+            record.fake_dstport = self._pick_port(match)
 
             #Port forwarding rule --incoming
             fm = of.ofp_flow_mod()
@@ -419,21 +426,17 @@ class NAT (object):
                     [self._forwarding[tcpp.dstport]]].hw_addr))
             fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
-            fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
-            fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))
+            fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_dstport)) #fk_port to be added in a record
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
-
-            #if record.fake_srcport != record.real_srcport:
-            #   fm.actions.append(of.ofp_action_tp_port.set_dst(record.real_srcport))
 
             fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]])) #50))
 
-            #record.port_forw_match = self.strip_match(fm.match)
-            #record.port_forw_fm = fm
-            #log.debug("port forw match %s", record.port_forw_match)
+            record.incoming_match = self.strip_match(fm.match)
+            record.incoming_fm = fm
+            log.debug("port forw match %s", record.incoming_match)
             log.debug("Added my flow")
 
-            event.connection.send(fm)
+            #event.connection.send(fm)
             # PORT FORWARD OUTGOING RULE
 
             fm = of.ofp_flow_mod()
@@ -445,8 +448,8 @@ class NAT (object):
             fm.match.dl_src = self._ip_to_mac[self._forwarding[tcpp.dstport]]
             fm.match.dl_dst = self._connection.ports[self._ip_to_port[self._forwarding[tcpp.dstport]]].hw_addr
             fm.match.nw_src = self._forwarding[tcpp.dstport]
-            fm.match.nw_dst = self.inside_ip
-            fm.match.tp_dst = tcpp.dstport
+            fm.match.nw_dst = ipp.srcip
+            fm.match.tp_dst = record.fake_dstport
             fm.match.tp_src = 22
 
             fm.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
@@ -456,18 +459,27 @@ class NAT (object):
             fm.actions.append(of.ofp_action_tp_port.set_dst(tcpp.srcport))
             fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))
             fm.actions.append(of.ofp_action_output(port = self._outside_portno))
+
+            record.outgoing_match = self.strip_match(fm.match)
+            record.outgoing_fm = fm
+            log.debug("%s installed", record)
             log.debug("added outgoing fw flow")
-            event.connection.send(fm)
+
+            self._record_by_incoming[record.incoming_match] = record
+            self._record_by_outgoing[record.outgoing_match] = record
+          else:
+            print "I AM ignoring"
             return
-        else :
-            # Ignore for a while
-            fm = of.ofp_flow_mod()
-            fm.idle_timeout = 1
-            fm.hard_timeout = 10
-            fm.match = of.ofp_match.from_packet(event.ofp)
-            print fm.match
-            event.connection.send(fm)
-            return
+      else :
+        print "I am ignoring for a while"
+        # Ignore for a while
+        fm = of.ofp_flow_mod()
+        fm.idle_timeout = 1
+        fm.hard_timeout = 10
+        fm.match = of.ofp_match.from_packet(event.ofp)
+        print fm.match
+        event.connection.send(fm)
+        return
       log.debug("%s reinstalled", record)
       record.incoming_fm.data = event.ofp # Hacky!
     else:
@@ -488,6 +500,8 @@ class NAT (object):
           return
 
       record = self._record_by_outgoing.get(match)
+      print "record is not none"
+      print record
       if record is None:
         record = Record()
         if tcpp:
@@ -548,10 +562,10 @@ class NAT (object):
 
         self._record_by_incoming[record.incoming_match] = record
         self._record_by_outgoing[record.outgoing_match] = record
-        self._record_by_forwarding[record.port_forw_match] = record
 
         log.debug("%s installed", record)
       else:
+        print "record existed"
         log.debug("%s reinstalled", record)
         record.outgoing_fm.data = event.ofp # Hacky!
 
@@ -559,9 +573,9 @@ class NAT (object):
 
     # Send/resend the flow mods
     if incoming:
-      data = record.outgoing_fm.pack() + record.incoming_fm.pack() #+ record.port_forw_fm.pack()
+      data = record.outgoing_fm.pack() + record.incoming_fm.pack()
     else:
-      data = record.incoming_fm.pack() + record.outgoing_fm.pack() #+ record.port_forw_fm.pack()
+      data = record.incoming_fm.pack() + record.outgoing_fm.pack()
     self._connection.send(data)
 
     # We may have set one of the data fields, but they should be reset since
