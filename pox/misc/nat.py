@@ -121,7 +121,6 @@ class NAT (object):
     # match -> Record
     self._record_by_outgoing = {}
     self._record_by_incoming = {}
-#    self._record_by_forwarding = {}
 
     core.listen_to_dependencies(self)
 
@@ -392,11 +391,15 @@ class NAT (object):
       log.debug("incoming check")
       match2 = match.clone()
       match2.dl_dst = None # See note below
-      record = self._record_by_incoming.get(match2)
-      for key in self._record_by_incoming:
-          print key
-          print self._record_by_incoming[key]
+      record = self._record_by_incoming.get(match)
+      #print "match  ="
+      #print match
+      #print "list of keys and respective records"
+      #for key in self._record_by_incoming:
+      #    print key
+      #    print self._record_by_incoming[key]
       if record is None:
+        print "RECORD IS NONE"
         if icmpp:
             if ipp.dstip == self.outside_ip:
                 self.respond_to_icmp(event)
@@ -467,21 +470,13 @@ class NAT (object):
 
             self._record_by_incoming[record.incoming_match] = record
             self._record_by_outgoing[record.outgoing_match] = record
+
           else:
             print "I AM ignoring"
             return
       else :
-        print "I am ignoring for a while"
-        # Ignore for a while
-        fm = of.ofp_flow_mod()
-        fm.idle_timeout = 1
-        fm.hard_timeout = 10
-        fm.match = of.ofp_match.from_packet(event.ofp)
-        print fm.match
-        event.connection.send(fm)
-        return
-      log.debug("%s reinstalled", record)
-      record.incoming_fm.data = event.ofp # Hacky!
+        log.debug("%s reinstalled", record)
+        record.incoming_fm.data = event.ofp # Hacky!
     else:
       log.debug("outgoing check")
       if icmpp:
