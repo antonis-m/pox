@@ -60,16 +60,9 @@ FLOW_TIMEOUT = 60
 FLOW_MEMORY_TIMEOUT = 60 * 10
 
 
-class Record (object):
+class flowrecord (object):
   def __init__ (self):
     self.touch()
-    self.outgoing_match = None
-    self.incoming_match = None
-    self.real_srcport = None
-    self.fake_srcport = None
-    self.fake_dstport = None
-    self.outgoing_fm = None
-    self.incoming_fm = None
 
   @property
   def expired (self):
@@ -78,11 +71,33 @@ class Record (object):
   def touch (self):
     self._expires_at = time.time() + FLOW_MEMORY_TIMEOUT
 
+
+class Flowflowrecord(flowrecord):
+  def __init__(self):
+    super(Flowflowrecord, self).__init__()
+    self.outgoing_match = None
+    self.incoming_match = None
+    self.real_srcport = None
+    self.fake_srcport = None
+    self.fake_dstport = None
+    self.outgoing_fm = None
+    self.incoming_fm = None
+
   def __str__ (self):
     s = "%s:%s" % (self.outgoing_match.nw_src, self.real_srcport)
     if self.fake_srcport != self.real_srcport:
       s += "/%s" % (self.fake_srcport,)
     s += " -> %s:%s" % (self.outgoing_match.nw_dst, self.outgoing_match.tp_dst)
+    return s
+
+class Arpflowrecord(flowrecord):
+  def __init__(self):
+    super(Arpflowrecord, self).__init__()
+    self.ip = None
+    self.mac = None
+
+  def __str__ (self):
+    s = "%s:%s" % (self.ip, self.mac)
     return s
 
 class NAT (object):
@@ -117,10 +132,10 @@ class NAT (object):
     #Match ICMP seq numbers to IPs
     self._icmp_seq = {}
 
-    # Flow records indexed in both directions
-    # match -> Record
-    self._record_by_outgoing = {}
-    self._record_by_incoming = {}
+    # Flow flowrecords indexed in both directions
+    # match -> Flowflowrecord
+    self._flowrecord_by_outgoing = {}
+    self._flowrecord_by_incoming = {}
 
     core.listen_to_dependencies(self)
 
@@ -148,13 +163,14 @@ class NAT (object):
     self._mac_to_port[event.entry.macaddr]=event.entry.port
     #Add ping checks for the entries ?
     for key in event.entry.ipAddrs:
-        if key in self._ip_to_mac:
-            print "need to delete old port for port forwarding"
-            for fport in self._forwarding:
-                if self._forwarding[fport] == key:
-                    #use dictionary comprehension instead.
-                    del self._forwarding[fport]
-                    self._used_ports.remove(('tcp',fport))
+        print key
+    #    if key in self._ip_to_mac:self._gateway_eth
+    #        print "need to delete old port for port forwarding"
+    #        for fport in self._forwarding:
+    #            if self._forwarding[fport] == key:
+    #                #use dictionary comprehension instead.
+    #                del self._forwarding[fport]
+    #                self._used_ports.remove(('tcp',fport))
         self._forwarding[self._pick_forwarding_port()] = IPAddr(key)
         self._ip_to_mac[key] = event.entry.macaddr
         self._ip_to_port[key]= event.entry.port
@@ -171,17 +187,17 @@ class NAT (object):
 
   def _expire (self):
     dead = []
-    for r in self._record_by_outgoing.itervalues():
+    for r in self._flowrecord_by_outgoing.itervalues():
       if r.expired:
         dead.append(r)
 
     for r in dead:
-      del self._record_by_outgoing[r.outgoing_match]
-      del self._record_by_incoming[r.incoming_match]
+      del self._flowrecord_by_outgoing[r.outgoing_match]
+      del self._flowrecord_by_incoming[r.incoming_match]
       #edw thelei veltiwsi i diagrafi fake_srcport i fake dstport?
       self._used_ports.remove((r.outgoing_match.nw_proto,r.fake_srcport))
 
-    if dead and not self._record_by_outgoing:
+    if dead and not self._flowrecord_by_outgoing:
       log.debug("All flows expired")
 
   def _remove_entry(self, dic, key):
@@ -222,7 +238,6 @@ class NAT (object):
       if port >= 65534:
         port = 49152
         cycle += 1
-
     log.warn("No ports to give!")
     return None
 
@@ -279,10 +294,11 @@ class NAT (object):
     ipp.srcip = self.outside_ip
     ipp.dstip = packet.find('ipv4').dstip
 
+    #ARP FOR HOST OR GW ETH
     #Wrap it in an Ethernet frame
     e = pkt.ethernet()
     e.dst = self._gateway_eth  #EthAddr(self._ip_to_mac[self._icmp_seq[icmp_rec.id]])
-    e.src = self._outside_eth #EthAddr(self._connection.ports[self._mac_to_port[e.dst]].hw_addr)
+    e.src = self._outside_eth
     e.type = e.IP_TYPE
 
     ipp.payload=icmp
@@ -300,9 +316,16 @@ class NAT (object):
     icmp_rec = packet.find('echo')
     print "icmp id " + str(icmp_rec.id)
     print self._icmp_seq
-    #Create ICMP ECHO REPLY
     icmp = pkt.icmp()
-    icmp.type = pkt.TYPE_ECHO_REPLY
+    if self._is_local(packet.find('ipv4').dstip) and not self._is_local(packet.find('ipv4').srcip):
+      #Create ICMP DEST UNREACHABLE
+      icmp.type = pkt.TYPE_DEST_UNREACH
+    elif packet.payload.ttl == 0 :
+      #Create ICMP TTL EXCEEDED
+      icmp.type=pkt.TYPE_TIME_EXCEED
+    else :
+      #Create ICMP ECHO REPLY
+      icmp.type = pkt.TYPE_ECHO_REPLY
     icmp.payload = packet.find('icmp').payload
 
     #Wrap it in an IP packet
@@ -391,25 +414,25 @@ class NAT (object):
       log.debug("incoming check")
       match2 = match.clone()
       match2.dl_dst = None # See note below
-      record = self._record_by_incoming.get(match)
+      flowrecord = self._flowrecord_by_incoming.get(match)
       #print "match  ="
       #print match
-      #print "list of keys and respective records"
-      #for key in self._record_by_incoming:
+      #print "list of keys and respective flowrecords"
+      #for key in self._flowrecord_by_incoming:
       #    print key
-      #    print self._record_by_incoming[key]
-      if record is None:
-        print "RECORD IS NONE"
+      #    print self._flowrecord_by_incoming[key]
+      if flowrecord is None:
+        print "flowrecord IS NONE"
         if icmpp:
             if ipp.dstip == self.outside_ip:
                 self.respond_to_icmp(event)
                 return
-        if tcpp:
+        if tcpp or udpp :
           if tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
-            record = Record()
-            record.real_srcport = tcpp.srcport
-            record.fake_srcport = tcpp.dstport
-            record.fake_dstport = self._pick_port(match)
+            flowrecord = Flowflowrecord()
+            flowrecord.real_srcport = tcpp.srcport
+            flowrecord.fake_srcport = tcpp.dstport
+            flowrecord.fake_dstport = self._pick_port(match)
 
             #Port forwarding rule --incoming
             fm = of.ofp_flow_mod()
@@ -429,14 +452,14 @@ class NAT (object):
                     [self._forwarding[tcpp.dstport]]].hw_addr))
             fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
-            fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_dstport)) #fk_port to be added in a record
+            fm.actions.append(of.ofp_action_tp_port.set_src(flowrecord.fake_dstport)) #fk_port to be added in a flowrecord
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
             fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]])) #50))
 
-            record.incoming_match = self.strip_match(fm.match)
-            record.incoming_fm = fm
-            log.debug("port forw match %s", record.incoming_match)
+            flowrecord.incoming_match = self.strip_match(fm.match)
+            flowrecord.incoming_fm = fm
+            log.debug("port forw match %s", flowrecord.incoming_match)
             log.debug("Added my flow")
 
             #event.connection.send(fm)
@@ -452,7 +475,7 @@ class NAT (object):
             fm.match.dl_dst = self._connection.ports[self._ip_to_port[self._forwarding[tcpp.dstport]]].hw_addr
             fm.match.nw_src = self._forwarding[tcpp.dstport]
             fm.match.nw_dst = ipp.srcip
-            fm.match.tp_dst = record.fake_dstport
+            fm.match.tp_dst = flowrecord.fake_dstport
             fm.match.tp_src = 22
 
             fm.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
@@ -463,20 +486,20 @@ class NAT (object):
             fm.actions.append(of.ofp_action_tp_port.set_src(tcpp.dstport))
             fm.actions.append(of.ofp_action_output(port = self._outside_portno))
 
-            record.outgoing_match = self.strip_match(fm.match)
-            record.outgoing_fm = fm
-            log.debug("%s installed", record)
+            flowrecord.outgoing_match = self.strip_match(fm.match)
+            flowrecord.outgoing_fm = fm
+            log.debug("%s installed", flowrecord)
             log.debug("added outgoing fw flow")
 
-            self._record_by_incoming[record.incoming_match] = record
-            self._record_by_outgoing[record.outgoing_match] = record
+            self._flowrecord_by_incoming[flowrecord.incoming_match] = flowrecord
+            self._flowrecord_by_outgoing[flowrecord.outgoing_match] = flowrecord
 
           else:
             print "I AM ignoring"
             return
       else :
-        log.debug("%s reinstalled", record)
-        record.incoming_fm.data = event.ofp # Hacky!
+        log.debug("%s reinstalled", flowrecord)
+        flowrecord.incoming_fm.data = event.ofp # Hacky!
     else:
       log.debug("outgoing check")
       if icmpp:
@@ -485,25 +508,26 @@ class NAT (object):
         print ipp
         if ipp.dstip == self.inside_ip or ipp.dstip == self.outside_ip:
           self.respond_to_icmp(event)
+          #first delete stale sequence numbers - this only allows one session to ping
           return
         elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
-          #first delete stale sequence numbers - this only allows one session to ping
           #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
           self._icmp_seq[icmpp.id] = ipp.srcip
           self.forward_icmp(event)
           return
+          #first delete stale sequence numbers - this only allows one session to ping
 
-      record = self._record_by_outgoing.get(match)
-      print "record is not none"
-      print record
-      if record is None:
-        record = Record()
+      flowrecord = self._flowrecord_by_outgoing.get(match)
+      print "flowrecord is not none"
+      print flowrecord
+      if flowrecord is None:
+        flowrecord = Flowflowrecord()
         if tcpp:
-          record.real_srcport = tcpp.srcport
+          flowrecord.real_srcport = tcpp.srcport
         elif udpp:
-          record.real_srcport = udpp.srcport
-        record.fake_srcport = self._pick_port(match)
+          flowrecord.real_srcport = udpp.srcport
+        flowrecord.fake_srcport = self._pick_port(match)
 
         # Outside heading in
         fm = of.ofp_flow_mod()
@@ -512,7 +536,7 @@ class NAT (object):
         fm.match = match.flip()
         fm.match.in_port = self._outside_portno
         fm.match.nw_dst = self.outside_ip
-        fm.match.tp_dst = record.fake_srcport
+        fm.match.tp_dst = flowrecord.fake_srcport
         fm.match.dl_src = self._gateway_eth
         # We should set dl_dst, but it can get in the way.  Why?  Because
         # in some situations, the ARP may ARP for and get the local host's
@@ -527,14 +551,14 @@ class NAT (object):
         if dns_hack:
           fm.match.nw_src = self.dns_ip
           fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
-        log.debug("real srcport %s face srcport %s",record.real_srcport,record.fake_srcport)
-        if record.fake_srcport != record.real_srcport:
-          fm.actions.append(of.ofp_action_tp_port.set_dst(record.real_srcport))
+        log.debug("real srcport %s fake srcport %s",flowrecord.real_srcport,flowrecord.fake_srcport)
+        if flowrecord.fake_srcport != flowrecord.real_srcport:
+          fm.actions.append(of.ofp_action_tp_port.set_dst(flowrecord.real_srcport))
 
         fm.actions.append(of.ofp_action_output(port = event.port))
 
-        record.incoming_match = self.strip_match(fm.match)
-        record.incoming_fm = fm
+        flowrecord.incoming_match = self.strip_match(fm.match)
+        flowrecord.incoming_fm = fm
 
         # Inside heading out
         fm = of.ofp_flow_mod()
@@ -547,36 +571,36 @@ class NAT (object):
         fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
         if dns_hack:
           fm.actions.append(of.ofp_action_nw_addr.set_dst(self.dns_ip))
-        if record.fake_srcport != record.real_srcport:
-          fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_srcport))
+        if flowrecord.fake_srcport != flowrecord.real_srcport:
+          fm.actions.append(of.ofp_action_tp_port.set_src(flowrecord.fake_srcport))
         fm.actions.append(of.ofp_action_dl_addr.set_dst(self._gateway_eth))
         fm.actions.append(of.ofp_action_output(port = self._outside_portno))
 
-        record.outgoing_match = self.strip_match(fm.match)
-        record.outgoing_fm = fm
+        flowrecord.outgoing_match = self.strip_match(fm.match)
+        flowrecord.outgoing_fm = fm
 
-        self._record_by_incoming[record.incoming_match] = record
-        self._record_by_outgoing[record.outgoing_match] = record
+        self._flowrecord_by_incoming[flowrecord.incoming_match] = flowrecord
+        self._flowrecord_by_outgoing[flowrecord.outgoing_match] = flowrecord
 
-        log.debug("%s installed", record)
+        log.debug("%s installed", flowrecord)
       else:
-        print "record existed"
-        log.debug("%s reinstalled", record)
-        record.outgoing_fm.data = event.ofp # Hacky!
+        print "flowrecord existed"
+        log.debug("%s reinstalled", flowrecord)
+        flowrecord.outgoing_fm.data = event.ofp # Hacky!
 
-    record.touch()
+    flowrecord.touch()
 
     # Send/resend the flow mods
     if incoming:
-      data = record.outgoing_fm.pack() + record.incoming_fm.pack()
+      data = flowrecord.outgoing_fm.pack() + flowrecord.incoming_fm.pack()
     else:
-      data = record.incoming_fm.pack() + record.outgoing_fm.pack()
+      data = flowrecord.incoming_fm.pack() + flowrecord.outgoing_fm.pack()
     self._connection.send(data)
 
     # We may have set one of the data fields, but they should be reset since
     # they won't be valid in the future.  Kind of hacky.
-    record.outgoing_fm.data = None
-    record.incoming_fm.data = None
+    flowrecord.outgoing_fm.data = None
+    flowrecord.incoming_fm.data = None
 
   def __handle_dpid_ConnectionUp (self, event):
     if event.dpid != self.dpid:
@@ -607,12 +631,12 @@ class NAT (object):
                                       ip = self.gateway_ip,
                                       port = self._outside_portno,
                                       src_ip = self.outside_ip)
-#  def _arp_for_host(self, ip):
-#      log.debug("Attempting to ARP for host (%s)", ip)
-#      self._ARPHelper_.send_arp_request(self._connection,
-#                                        ip = ip,
-#                                        port=self.ip_to_port[self.inside_ip],
-#                                        src_ip = self.inside_ip)
+  def _arp_for_host(self, ip):
+      log.debug("Attempting to ARP for host (%s)", ip)
+      self._ARPHelper_.send_arp_request(self._connection,
+                                        ip = ip,
+                                        port=self.outside_portno,  #self.ip_to_port[self.inside_ip],
+                                        src_ip = self.outside_ip) #self.inside_ip)
 
   def _handle_ARPHelper_ARPReply (self, event):
     if event.dpid != self.dpid: return
@@ -620,6 +644,9 @@ class NAT (object):
     if event.reply.protosrc == self.gateway_ip:
       self._gateway_eth = event.reply.hwsrc
       log.info("Gateway %s is %s", self.gateway_ip, self._gateway_eth)
+    else:
+      print "lala"
+      #return (me ena if ) to fm or icmp until arp has answered the fm somehow or the arp request
 
   def _handle_ARPHelper_ARPRequest (self, event):
     if event.dpid != self.dpid: return
@@ -651,6 +678,7 @@ def launch (dpid, outside_port, outside_ip = '10.0.0.2',
   outside_ip = IPAddr(outside_ip)
   dns_ip = IPAddr('8.8.8.8')
   gateway_ip = IPAddr('10.0.0.3')
+  #gateway_ip = IPAddr('83.212.116.1')
   log.debug('Starting NAT')
 
   n = NAT(inside_ip, outside_ip, gateway_ip, dns_ip, outside_port, dpid)
