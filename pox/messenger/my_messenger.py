@@ -7,10 +7,16 @@ log = core.getLogger()
 
 
 class MessengerEvent (Event):
-    def __init__(self, mac, ip, port, join=False, leave=False):
+    def __init__(self, router, mac, mac_prefix, ip, subnet, net_id,
+                 port, gateway_ip, join=False, leave=False):
         super(MessengerEvent, self).__init__()
+        self.router = router
         self.ip = ip
+        self.gateway_ip = gateway_ip
         self.mac = mac
+        self.mac_prefix = mac_prefix
+        self.subnet = subnet
+        self.net_id = net_id
         self.port = port
         self.join = join
         self.leave = leave
@@ -44,7 +50,9 @@ class CycladesService (EventMixin):
         else:
             print "received message with new NIC_params. Updating router"
             port = self._pick_forwarding_port()
-            entry = MessengerEvent("aa:vv:vv", "10.0.0.0", port, True)
+            entry = MessengerEvent("yes","aa:vv:vv", "aa:vv:bb:","83.0.0.0",
+                                   "10.0.0.0/24", 42, port, "10.0.0.1",
+                                    True)
             self.raiseEventNoErrors(entry)
             self.con.send(reply(msg,msg="OK"))
 
@@ -53,7 +61,7 @@ class CycladesService (EventMixin):
         cycle = 0
         while (cycle < 5):
             if port not in self._forwarding:
-                self._used_ports.add(port)
+                self._forwarding.add(port)
                 print port
                 return port
             port += 1
