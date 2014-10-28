@@ -51,7 +51,6 @@ import pox.openflow.libopenflow_01 as of
 import pox.openflow.discovery
 import pox.proto.arp_helper as ah
 import pox.messenger
-from pox.proto.dhcpd import DHCPD, SimpleAddressPool
 
 import time
 import random
@@ -92,6 +91,7 @@ class NAT (object):
     self.subnet = None
     self.outside_ip = None
     self.gateway_ip = None
+    self.inside_ips = {}
 
     self._outside_portno = None
     self._gateway_eth = None
@@ -104,7 +104,9 @@ class NAT (object):
 
     # Which NAT ports have we used?
     # proto means TCP or UDP
-    self._used_ports = set() # (proto,port)
+    self._used_ports = set()
+    self._used_forwarding_ports = set()
+    self._managed_ips = set() #(net_id, ip)
 
     #Which NAT ports have we used for forwarding rules ?
     self._forwarding = {} # (key=port, value=IP)
@@ -126,45 +128,41 @@ class NAT (object):
                                         self.__handle_messenger_MessengerEvent)
 
   def __handle_messenger_MessengerEvent(self, event):
-      print event.port
       if event.router == "yes":
-         mac = event.mac
-         mac_prefix = event.mac_prefix
-         ip = IPAddr(event.ip)
-         gateway_ip = IPAddr(event.gateway_ip)
-         net_id = event.net_id
-         if not self._is_local(ip):
-           self.subnet = event.subnet
-           self.outside_ip = ip
-           self.gateway_ip = gateway_ip
-           self._outside_portno = net_id
-           print self._connection.ports[net_id]
-           self._outside_port_handling()
-         else:
-           print "yolo"
-         net_id = event.net_id
-         self._forwarding[event.port] = event.ip
-      #elif event.leave == True
-      #    del self._forwarding[event.port]
-      #### TRACK OVS PORT FOR THIS NIC
-      #### self._mac_to_port[event.mac] = port
-      #### self._ip_to_mac...
-      #### self._ip_to_port...
-
-#  def _handle_host_tracker_HostEvent(self,event):
-#    self._mac_to_port[event.entry.macaddr]=event.entry.port
-#    #Add ping checks for the entries ?
-#    for key in event.entry.ipAddrs:
-#        if key in self._ip_to_mac:
-#            print "need to delete old port for port forwarding"
-#            for fport in self._forwarding:
-#                if self._forwarding[fport] == key:
-#                    #use dictionary comprehension instead.
-#                    del self._forwarding[fport]
-#                    self._used_ports.remove(('tcp',fport))
-#        self._forwarding[self._pick_forwarding_port()] = IPAddr(key)
-#        self._ip_to_mac[key] = event.entry.macaddr
-#        self._ip_to_port[key]= event.entry.port
+         router_nics = event.router_nics
+         user_nics = event.user_nics
+         for x in router_nics.keys():
+            mac = EthAddr(router_nics[x][0])
+            #mac_prefix = router_nics[x][1]
+            ip = IPAddr(router_nics[x][2])
+            net_id = router_nics[x][5]
+            if not self._is_local(ip):
+              self.subnet = router_nics[x][4]
+              self.outside_ip = ip
+              self.gateway_ip = IPAddr(router_nics[x][3])
+              self._outside_portno = net_id
+              self._outside_port_handling()
+            else:
+              self.inside_ips[net_id] = (ip, mac)
+         for x in user_nics.keys():
+           mac = EthAddr(user_nics[x][0])
+           #mac_prefix = user_nics[x][1]
+           ip = IPAddr(user_nics[x][2])
+           net_id = user_nics[x][5]
+           if (net_id, ip) not in self._managed_ips:
+             tcp_port=self._pick_forwarding_port()
+             self._forwarding[tcp_port] = (net_id, ip, mac)
+      else:
+        host_nics = event.host_nics
+        for x in host_nics.keys():
+          mac = EthAddr(user_nics[x][0])
+          #mac_prefix = user_nics[x][1]
+          ip = IPAddr(user_nics[x][2])
+          net_id = user_nics[x][5]
+          if (net_id, ip) not in self._managed_ips:
+            tcp_port=self._pick_forwarding_port()
+            self._forwarding[tcp_port] = (net_id, ip, mac)
+## one thing is left, remove diff from forwarding ports
 
   def _all_dependencies_met (self):
     log.debug('Trying to start...')
@@ -213,13 +211,11 @@ class NAT (object):
     """
 
     port = flow.tp_src
-
     if port < 1024:
       # Never allow these
       port = random.randint(49152, 65534)
 
     # Pretty sloppy!
-
     cycle = 0
     while cycle < 2:
       if (flow.nw_proto,port) not in self._used_ports:
@@ -233,9 +229,26 @@ class NAT (object):
     log.warn("No ports to give!")
     return None
 
+
+  def _pick_forwarding_port (self):
+
+    port = random.randint(49152, 65534)
+    cycle = 0
+    while cycle < 2:
+      if port not in self._used_forwarding_ports:
+        self._used_forwarding_ports.add(port)
+        return port
+      port += 1
+      if port >= 65534:
+        port = 49152
+        cycle += 1
+    log.warn("No ports to give!")
+    return None
+
   @property
   def _outside_eth (self):
     if self._connection is None: return None
+    if self._outside_portno is None: return None
     return self._connection.ports[self._outside_portno].hw_addr
 
   def _handle_FlowRemoved (self, event):
@@ -262,12 +275,11 @@ class NAT (object):
     self._start(event.connection)
 
   def _start (self, connection):
-    print "liru"
     self._connection = connection
+    self._connection.addListeners(self)
     return
 
   def _outside_port_handling(self):
-
     #process incoming traffic - to be processed by controller
     fm = of.ofp_flow_mod()
     fm.match.in_port = self._outside_portno
@@ -275,9 +287,7 @@ class NAT (object):
     fm.match.nw_dst = self.outside_ip
     fm.actions.append(of.ofp_action_output(port=of.OFPP_CONTROLLER))
     fm.priority = 2
-    connection.send(fm)
-
-    connection.addListeners(self)
+    self._connection.send(fm)
 
     # Need to find gateway MAC -- send an ARP
     self._arp_for_gateway()
@@ -299,8 +309,8 @@ class NAT (object):
 
     #Wrap it in an Ethernet frame
     e = pkt.ethernet()
-    e.dst = self._gateway_eth  #EthAddr(self._ip_to_mac[self._icmp_seq[icmp_rec.id]])
-    e.src = self._outside_eth #EthAddr(self._connection.ports[self._mac_to_port[e.dst]].hw_addr)
+    e.dst = self._gateway_eth
+    e.src = self._outside_eth
     e.type = e.IP_TYPE
 
     ipp.payload=icmp
@@ -358,10 +368,11 @@ class NAT (object):
 
 
   def _handle_PacketIn (self, event):
+
     if self._outside_eth is None: return
 
     print "PACKET",event.connection.ports[event.port].name,event.port,
-    print self.outside_port, self.make_match(event.ofp)
+    print self._outside_portno, self.make_match(event.ofp)
     incoming = event.port == self._outside_portno
     log.debug("event.port is %s self._outside_portno is %s",event.port,self._outside_portno)
     if self._gateway_eth is None:
@@ -369,24 +380,26 @@ class NAT (object):
       return
 
     packet = event.parsed
+    inside_ips = [v[0] for k,v in self.inside_ips.iteritems()]
     dns_hack = False
 
     # TCP UDP and ICMP handling
     tcpp = False
     udpp = False
     icmpp = False
+
     tcpp = packet.find('tcp')
     if tcpp:
         ipp=tcpp.prev
     elif not tcpp:
       udpp = packet.find('udp')
       if udpp:
-        if udpp.dstport == 53 and udpp.prev.dstip == self.inside_ip:
+        if udpp.dstport == 53 and udpp.prev.dstip in inside_ips:
             if self.dns_ip and not incoming:
                 dns_hack = True
         ipp = udpp.prev
       else:
-        icmpp = packet.find('echo')
+        icmpp = packet.find('echo') #FIXME : replace echo with icmp maybe ??
         if icmpp:
             log.debug("this is a ping")
             ipp = packet.find('icmp').prev
@@ -410,12 +423,6 @@ class NAT (object):
       match2 = match.clone()
       match2.dl_dst = None # See note below
       record = self._record_by_incoming.get(match)
-      #print "match  ="
-      #print match
-      #print "list of keys and respective records"
-      #for key in self._record_by_incoming:
-      #    print key
-      #    print self._record_by_incoming[key]
       if record is None:
         print "RECORD IS NONE"
         if icmpp:
@@ -450,7 +457,7 @@ class NAT (object):
             fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_dstport)) #fk_port to be added in a record
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
-            fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]])) #50))
+            fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]]))
 
             record.incoming_match = self.strip_match(fm.match)
             record.incoming_fm = fm
@@ -501,10 +508,10 @@ class NAT (object):
         print icmpp.id
         print icmpp.seq
         print ipp
-        if ipp.dstip == self.inside_ip or ipp.dstip == self.outside_ip:
+        if ipp.dstip in self.inside_ips.keys() or ipp.dstip == self.outside_ip:
           self.respond_to_icmp(event)
           return
-        elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
+        elif not self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
           #first delete stale sequence numbers - this only allows one session to ping
           #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
@@ -544,6 +551,7 @@ class NAT (object):
 
         if dns_hack:
           fm.match.nw_src = self.dns_ip
+          #FIXME: replace insipe ip with correct ip
           fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
         log.debug("real srcport %s face srcport %s",record.real_srcport,record.fake_srcport)
         if record.fake_srcport != record.real_srcport:
@@ -618,7 +626,6 @@ class NAT (object):
 
   def _handle_ARPHelper_ARPRequest (self, event):
     if event.dpid != self.dpid: return
-
     dstip = event.request.protodst
     if event.port == self._outside_portno:
       if dstip == self.outside_ip:
@@ -627,11 +634,10 @@ class NAT (object):
         else:
           event.reply = self._outside_eth
     else:
-      if dstip == self.inside_ip or not self._is_local(dstip):
+      if dstip in self.inside_ips.keys() or not self._is_local(dstip):
         if self._connection is None:
           log.warn("Someone tried to ARP us, but no connection yet")
         else:
-          #event.reply = self._connection.eth_addr
           event.reply = self._connection.ports[event.port].hw_addr
 
 def launch (dpid):

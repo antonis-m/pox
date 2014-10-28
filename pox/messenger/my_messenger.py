@@ -7,21 +7,14 @@ log = core.getLogger()
 
 
 class MessengerEvent (Event):
-    def __init__(self, router, mac, mac_prefix, ip, subnet, net_id,
-                 port, gateway_ip, join=False, leave=False):
+    def __init__(self, router, router_nics, user_nics,
+                 join=False, leave=False):
         super(MessengerEvent, self).__init__()
         self.router = router
-        self.ip = ip
-        self.gateway_ip = gateway_ip
-        self.mac = mac
-        self.mac_prefix = mac_prefix
-        self.subnet = subnet
-        self.net_id = net_id
-        self.port = port
+        self.router_nics = router_nics
+        self.user_nics = user_nics
         self.join = join
         self.leave = leave
-
-        assert sum(1 for x in [join, leave] if x) == 1
 
 
 class CycladesService (EventMixin):
@@ -30,7 +23,6 @@ class CycladesService (EventMixin):
 
     def __init__(self, parent, con, event):
         EventMixin.__init__(self)
-        self._forwarding = set()
         self.parent = parent
         self.con = con
         self.count = 0
@@ -48,28 +40,12 @@ class CycladesService (EventMixin):
             self.con.send(reply(msg,msg="send next message with router info "))
             self.count += 1
         else:
+            print event
             print "received message with new NIC_params. Updating router"
-            port = self._pick_forwarding_port()
-            entry = MessengerEvent("yes","aa:vv:vv", "aa:vv:bb:","83.0.0.0",
-                                   "10.0.0.0/24", 42, port, "10.0.0.1",
-                                    True)
+            entry = MessengerEvent("yes",{"132":("aa:bb:cc:dd:ee:ff","aa:bb:c",'10.2.1.3','10.2.1.1','10.2.0.0/24',42)},
+                                   {"145":("aa:bb:cc:dd:ee:ff",'aa:bb:cc','10.2.1.4','10.2.1.1','10.2.0.0/24',42)},True)
             self.raiseEventNoErrors(entry)
             self.con.send(reply(msg,msg="OK"))
-
-    def _pick_forwarding_port(self):
-        port = random.randint(49152, 65534)
-        cycle = 0
-        while (cycle < 5):
-            if port not in self._forwarding:
-                self._forwarding.add(port)
-                print port
-                return port
-            port += 1
-            if port > 65534:
-                port = 49152
-                cycle += 1
-        log.warn("No ports to give")
-        return None
 
 
 class CycladesBot (ChannelBot):
