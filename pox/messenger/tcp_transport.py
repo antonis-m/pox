@@ -70,8 +70,8 @@ class TCPConnection (Connection, Task):
 
   @staticmethod
   def _get_socket_name(socket):
-    s = "%s:%i" % socket.getsockname()
-    s += "/%s:%i" % socket.getpeername()
+    s = "%s:%i:%i:%i" % socket.getsockname()
+    s += "/%s:%i:%i:%i" % socket.getpeername()
     return s
 
 
@@ -91,7 +91,7 @@ class ActiveTCPTransport (Task, Transport):
     port = int(port)
     Task.__init__(self)
     Transport.__init__(self, nexus)
-    self._addr = (str(address),port)
+    self._addr = (str(address),port,0,0)
     self._connections = set()
     self._connection_class = connection_class
     self._max_backoff = max_backoff
@@ -115,7 +115,7 @@ class ActiveTCPTransport (Task, Transport):
       while core.running:
         #self.log.debug("Trying %s:%s...", self._addr[0], self._addr[1])
 
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
         s.setblocking(0)
         r = s.connect_ex(self._addr)
 
@@ -175,12 +175,12 @@ class ActiveTCPTransport (Task, Transport):
 
 
 class TCPTransport (Task, Transport):
-  def __init__ (self, address = "0.0.0.0", port = 7790, nexus = None,
+  def __init__ (self, address = "::", port = 7790, nexus = None,
                 connection_class = TCPConnection):
     port = int(port)
     Task.__init__(self)
     Transport.__init__(self, nexus)
-    self._addr = (address,port)
+    self._addr = (address,port,0,0)
     self._connections = set()
     self._connection_class = connection_class
 
@@ -191,12 +191,12 @@ class TCPTransport (Task, Transport):
       self._connections.remove(connection)
 
   def run (self):
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(self._addr)
     listener.listen(0)
 
-    log.debug("Listening on %s:%i" % (self._addr))
+    log.debug("Listening on %s:%i:%i:%i" % (self._addr))
 
     con = None
     while core.running:
@@ -228,7 +228,7 @@ def active (tcp_address, tcp_port = 7790):
   core.call_when_ready(start, "MessengerNexus", __name__)
 
 
-def launch (tcp_address = "0.0.0.0", tcp_port = 7790):
+def launch (tcp_address = "::", tcp_port = 7790):
   def start ():
     t = TCPTransport(tcp_address, tcp_port)
     t.start()

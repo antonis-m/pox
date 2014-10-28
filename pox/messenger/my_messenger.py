@@ -7,15 +7,14 @@ log = core.getLogger()
 
 
 class MessengerEvent (Event):
-    def __init__(self, mac, ip, port, join=False, leave=False):
+    def __init__(self, router, router_nics, user_nics,
+                 join=False, leave=False):
         super(MessengerEvent, self).__init__()
-        self.ip = ip
-        self.mac = mac
-        self.port = port
+        self.router = router
+        self.router_nics = router_nics
+        self.user_nics = user_nics
         self.join = join
         self.leave = leave
-
-        assert sum(1 for x in [join, leave] if x) == 1
 
 
 class CycladesService (EventMixin):
@@ -24,7 +23,6 @@ class CycladesService (EventMixin):
 
     def __init__(self, parent, con, event):
         EventMixin.__init__(self)
-        self._forwarding = set()
         self.parent = parent
         self.con = con
         self.count = 0
@@ -42,26 +40,12 @@ class CycladesService (EventMixin):
             self.con.send(reply(msg,msg="send next message with router info "))
             self.count += 1
         else:
+            print event
             print "received message with new NIC_params. Updating router"
-            port = self._pick_forwarding_port()
-            entry = MessengerEvent("aa:vv:vv", "10.0.0.0", port, True)
+            entry = MessengerEvent("yes",{"132":("aa:bb:cc:dd:ee:ff","aa:bb:c",'10.2.1.3','10.2.1.1','10.2.0.0/24',42)},
+                                   {"145":("aa:bb:cc:dd:ee:ff",'aa:bb:cc','10.2.1.4','10.2.1.1','10.2.0.0/24',42)},True)
             self.raiseEventNoErrors(entry)
             self.con.send(reply(msg,msg="OK"))
-
-    def _pick_forwarding_port(self):
-        port = random.randint(49152, 65534)
-        cycle = 0
-        while (cycle < 5):
-            if port not in self._forwarding:
-                self._used_ports.add(port)
-                print port
-                return port
-            port += 1
-            if port > 65534:
-                port = 49152
-                cycle += 1
-        log.warn("No ports to give")
-        return None
 
 
 class CycladesBot (ChannelBot):
