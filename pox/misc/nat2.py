@@ -52,9 +52,21 @@ import random
 FLOW_TIMEOUT = 60
 FLOW_MEMORY_TIMEOUT = 60 * 10
 
+class Record(object):
+  def __init__(self):
+    self.touch()
 
-class Record (object):
-  def __init__ (self):
+  @property
+  def expired(self):
+    return time.time() > self._expires_at
+
+  def touch(self):
+    self._expires_at = time.time() + FLOW_MEMORY_TIMEOUT
+
+
+class FlowRecord (Record):
+  def __init__(self):
+    super(FlowRecord, self).__init__ ()
     self.touch()
     self.outgoing_match = None
     self.incoming_match = None
@@ -64,18 +76,23 @@ class Record (object):
     self.outgoing_fm = None
     self.incoming_fm = None
 
-  @property
-  def expired (self):
-    return time.time() > self._expires_at
-
-  def touch (self):
-    self._expires_at = time.time() + FLOW_MEMORY_TIMEOUT
-
   def __str__ (self):
     s = "%s:%s" % (self.outgoing_match.nw_src, self.real_srcport)
     if self.fake_srcport != self.real_srcport:
       s += "/%s" % (self.fake_srcport,)
     s += " -> %s:%s" % (self.outgoing_match.nw_dst, self.outgoing_match.tp_dst)
+    return s
+
+class ICMPRecord(Record):
+  def __init__(self, seq_id, ip, src_mac):
+    super(ICMPRecord, self).__init__()
+    self.touch()
+    self.seq_id = seq_id
+    self.ip = ip
+    self.src_mac = src_mac
+
+  def __str__ (self):
+    s = "%s:%s" % (self.seq_id, self.ip)
     return s
 
 class NAT (object):
@@ -107,9 +124,10 @@ class NAT (object):
     self._icmp_seq = {}
 
     # Flow records indexed in both directions
-    # match -> Record
+    # match -> FlowRecord
     self._record_by_outgoing = {}
     self._record_by_incoming = {}
+    self._icmp_records = {}
 
     core.listen_to_dependencies(self)
 
@@ -123,6 +141,7 @@ class NAT (object):
       if event.router == "yes":
          router_nics = event.router_nics
          user_nics = event.user_nics
+         rem_nics = {}
          for x in router_nics.keys():
             mac = EthAddr(router_nics[x][0])
             #mac_prefix = router_nics[x][1]
@@ -188,8 +207,6 @@ class NAT (object):
               if port_to_remove != -1:
                 del self._forwarding[port_to_remove]
 
-## one thing is left, remove diff from forwarding ports
-
   def _all_dependencies_met (self):
     log.debug('Trying to start...')
     if self.dpid in core.openflow.connections:
@@ -205,18 +222,27 @@ class NAT (object):
     for r in self._record_by_outgoing.itervalues():
       if r.expired:
         dead.append(r)
+    for r in self._icmp_records.itervalues():
+      if r.expired:
+        dead.append(r)
 
     for r in dead:
-      del self._record_by_outgoing[r.outgoing_match]
-      del self._record_by_incoming[r.incoming_match]
-      #edw thelei veltiwsi i diagrafi fake_srcport i fake dstport?
-      self._used_ports.remove((r.outgoing_match.nw_proto,r.fake_srcport))
+      try:
+        del self._record_by_outgoing[r.outgoing_match]
+        del self._record_by_incoming[r.incoming_match]
+        #edw thelei veltiwsi i diagrafi fake_srcport i fake dstport?
+        self._used_ports.remove((r.outgoing_match.nw_proto,r.fake_srcport))
+      except:
+        pass
+      try:
+        if r.seq_id in self._icmp_records.keys():
+          del self._icmp_records[r.seq_id]
+          del self._icmp_seq[r.seq_id]
+     except:
+        pass
 
     if dead and not self._record_by_outgoing:
       log.debug("All flows expired")
-
-  def _remove_entry(self, dic, key):
-      del dic[key]
 
   def _is_local (self, ip):
     if ip.is_multicast: return True
@@ -460,7 +486,7 @@ class NAT (object):
                 return
         if tcpp:
           if tcpp.dstport in self._forwarding: ##if port can be found in dictionnary of forwarding rules
-            record = Record()
+            record = FlowRecord()
             record.real_srcport = tcpp.srcport
             record.fake_srcport = tcpp.dstport
             record.fake_dstport = self._pick_port(match)
@@ -543,6 +569,9 @@ class NAT (object):
           #Logic for mangling outgoing icmp
           #first delete stale sequence numbers - this only allows one session to ping
           #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
+          if icmpp.id not in self._icmp_seq:
+            icmp_record = ICMPRecord(icmpp.id, ipp.srcip, packet.src)
+            self._icmp_records[icmpp.id] = icmp_record
           self._icmp_seq[icmpp.id] = (ipp.srcip, packet.src)
           self.forward_icmp(event)
           return
@@ -551,7 +580,7 @@ class NAT (object):
       print "record is not none"
       print record
       if record is None:
-        record = Record()
+        record = FlowRecord()
         if tcpp:
           record.real_srcport = tcpp.srcport
         elif udpp:
