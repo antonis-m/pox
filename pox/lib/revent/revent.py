@@ -83,11 +83,12 @@ class Source (EventMixin):
     # ComponentRegistered (which is a subclass of Event).  The following is
     # functionally equivalent, but has the nice property that
     # ComponentRegistered is never instantiated if there are no listeners.
-    #self.raiseEvent(ComponentRegistered, component)
+    # self.raiseEvent(ComponentRegistered, component)
     # In both cases, "component" is passed to the __init__ method for the
     # ComponentRegistered class.
-
-  To project yourself from exceptions in
+    # The above method invocation will raise an exception if an event handler
+    # raises en exception.
+    # To project yourself from exceptions in
     # handlers, see raiseEventNoErrors().
 """
 
