@@ -14,22 +14,15 @@
 # limitations under the License.
 
 """
-A kind of sloppy NAT component.
-
 Required commandline parameters:
   --dpid            The DPID to NAT-ize
-  --outside-port=X  The port on DPID that connects "upstream" (e.g, "eth0")
-
-Optional parameters:
-  --subnet=X        The local subnet to use (e.g., "192.168.0.1/24")
-  --inside-ip=X     The inside-facing IP address the switch will claim to be
 
 To get this to work with Open vSwitch, you probably have to disable OVS's
 in-band control with something like:
   ovs-vsctl set bridge s1 other-config:disable-in-band=true
 
-Please submit improvements. :)
 """
+
 from threading import Timer
 from time import *
 from pox.core import core
@@ -50,8 +43,9 @@ import pox.lib.recoco as recoco
 import pox.openflow.libopenflow_01 as of
 import pox.openflow.discovery
 import pox.proto.arp_helper as ah
-import pox.messenger
-
+import pox.messenger as messenger
+import pox.messenger.tcp_transport as tcp_transport
+import pox.messenger.my_messenger as my_messenger
 import time
 import random
 
@@ -99,17 +93,15 @@ class NAT (object):
 
     #Information about machines in the network
     self._mac_to_port = {}  # to reach x host we need to send traffic through port y
-    self._ip_to_mac = {}    # host x's mac is tied with this ip
-    self._ip_to_port = {}   # to reach x host we need to send traffic through port y
 
     # Which NAT ports have we used?
-    # proto means TCP or UDP
     self._used_ports = set()
     self._used_forwarding_ports = set()
-    self._managed_ips = set() #(net_id, ip)
+    self._managed_ips = set() #(net_id, ip, mac)
 
     #Which NAT ports have we used for forwarding rules ?
-    self._forwarding = {} # (key=port, value=IP)
+    self._forwarding = {} # (key=port, value=(net_id, ip, mac)
+    self._nic_to_forw = {} #(key=cyclades_nic_id, value=forw_port)
 
     #Match ICMP seq numbers to IPs
     self._icmp_seq = {}
@@ -136,7 +128,8 @@ class NAT (object):
             #mac_prefix = router_nics[x][1]
             ip = IPAddr(router_nics[x][2])
             net_id = router_nics[x][5]
-            if not self._is_local(ip):
+            if str(ip) == "10.0.0.2": #not self._is_local(ip):
+              print "FUCK YOU BIG BOOOY"
               self.subnet = router_nics[x][4]
               self.outside_ip = ip
               self.gateway_ip = IPAddr(router_nics[x][3])
@@ -149,9 +142,27 @@ class NAT (object):
            #mac_prefix = user_nics[x][1]
            ip = IPAddr(user_nics[x][2])
            net_id = user_nics[x][5]
-           if (net_id, ip) not in self._managed_ips:
+           if (net_id, ip, mac) not in self._managed_ips:
              tcp_port=self._pick_forwarding_port()
              self._forwarding[tcp_port] = (net_id, ip, mac)
+             self._managed_ips.add((net_id, ip, mac))
+             self._mac_to_port[mac] = net_id
+             print tcp_port
+             print ip
+         for x in rem_nics.keys():
+           if rem_nics[x] in self._managed_ips:
+             self._managed_ips.remove(rem_nics[x])
+             del self._mac_to_port[rem_nics[x][2]]
+             port_to_remove = -1
+             for z in self._forwarding.keys():
+               if self._forwarding[z] == rem_nics[x]:
+                 port_to_remove = z
+               if port_to_remove != -1:
+                 del self._forwarding[port_to_remove]
+           elif self.inside_ips[rem_nics[x][0]] == (rem_nics[x][0],rem_nics[x][1]):
+             del self.inside_ips[rem_nics[x][0]]
+
+
       else:
         host_nics = event.host_nics
         for x in host_nics.keys():
@@ -162,6 +173,21 @@ class NAT (object):
           if (net_id, ip) not in self._managed_ips:
             tcp_port=self._pick_forwarding_port()
             self._forwarding[tcp_port] = (net_id, ip, mac)
+            self._managed_ips.add((net_id, ip, mac))
+            self._mac_to_port[mac] = net_id
+            print tcp_port
+            print ip
+        for x in rem_nics.keys():
+          if rem_nics[x] in self._managed_ips:
+            self._managed_ips.remove(rem_nics[x])
+            del self._mac_to_port[rem_nics[x][2]]
+            port_to_remove = -1
+            for z in self._forwarding.keys():
+              if self._forwarding[z] == rem_nics[x]:
+                port_to_remove = z
+              if port_to_remove != -1:
+                del self._forwarding[port_to_remove]
+
 ## one thing is left, remove diff from forwarding ports
 
   def _all_dependencies_met (self):
@@ -277,6 +303,9 @@ class NAT (object):
   def _start (self, connection):
     self._connection = connection
     self._connection.addListeners(self)
+    messenger.launch()
+    tcp_transport.launch()
+    my_messenger.launch()
     return
 
   def _outside_port_handling(self):
@@ -341,7 +370,7 @@ class NAT (object):
       ipp.dstip = packet.find('ipv4').srcip
     else:
       ipp.srcip = packet.find('ipv4').srcip
-      ipp.dstip = IPAddr(self._icmp_seq[icmp_rec.id])
+      ipp.dstip = IPAddr(self._icmp_seq[icmp_rec.id][0])
 
     #Wrap it in an Ethernet frame
     e = pkt.ethernet()
@@ -349,7 +378,7 @@ class NAT (object):
       e.src = packet.dst
       e.dst = packet.src
     else:
-      e.dst = EthAddr(self._ip_to_mac[self._icmp_seq[icmp_rec.id]])
+      e.dst = self._icmp_seq[icmp_rec.id][1]
       e.src = EthAddr(self._connection.ports[self._mac_to_port[e.dst]].hw_addr)
     e.type = e.IP_TYPE
 
@@ -450,14 +479,16 @@ class NAT (object):
             fm.match.dl_src = packet.src
             fm.match.dl_dst = self._outside_eth
 
-            fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._ip_to_port \
-                    [self._forwarding[tcpp.dstport]]].hw_addr))
-            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
-            fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport]))
+            #fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._ip_to_port \
+            #        [self._forwarding[tcpp.dstport]]].hw_addr))
+            fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._forwarding[tcpp.dstport][0]].hw_addr))
+            #fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
+            fm.actions.append(of.ofp_action_dl_addr.set_dst(self._forwarding[tcpp.dstport][2]))
+            fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport][1]))
             fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_dstport)) #fk_port to be added in a record
             fm.actions.append(of.ofp_action_tp_port.set_dst(22))
 
-            fm.actions.append(of.ofp_action_output(port = self._ip_to_port[self._forwarding[tcpp.dstport]]))
+            fm.actions.append(of.ofp_action_output(port=self._forwarding[tcpp.dstport][0]))
 
             record.incoming_match = self.strip_match(fm.match)
             record.incoming_fm = fm
@@ -472,10 +503,10 @@ class NAT (object):
             fm.flags |= of.OFPFF_SEND_FLOW_REM
             fm.hard_timeout = FLOW_TIMEOUT
             fm.match=match.flip()
-            fm.match.in_port = self._ip_to_port[self._forwarding[tcpp.dstport]]
-            fm.match.dl_src = self._ip_to_mac[self._forwarding[tcpp.dstport]]
-            fm.match.dl_dst = self._connection.ports[self._ip_to_port[self._forwarding[tcpp.dstport]]].hw_addr
-            fm.match.nw_src = self._forwarding[tcpp.dstport]
+            fm.match.in_port = self._forwarding[tcpp.dstport][0]
+            fm.match.dl_src = self._forwarding[tcpp.dstport][2]
+            fm.match.dl_dst = self._connection.ports[self._forwarding[tcpp.dstport][0]].hw_addr
+            fm.match.nw_src = self._forwarding[tcpp.dstport][1]
             fm.match.nw_dst = ipp.srcip
             fm.match.tp_dst = record.fake_dstport
             fm.match.tp_src = 22
@@ -505,17 +536,14 @@ class NAT (object):
     else:
       log.debug("outgoing check")
       if icmpp:
-        print icmpp.id
-        print icmpp.seq
-        print ipp
-        if ipp.dstip in self.inside_ips.keys() or ipp.dstip == self.outside_ip:
+        if ipp.dstip in inside_ips or ipp.dstip == str(self.outside_ip):
           self.respond_to_icmp(event)
           return
-        elif not self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
+        elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
           #first delete stale sequence numbers - this only allows one session to ping
           #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
-          self._icmp_seq[icmpp.id] = ipp.srcip
+          self._icmp_seq[icmpp.id] = (ipp.srcip, packet.src)
           self.forward_icmp(event)
           return
 
@@ -549,10 +577,10 @@ class NAT (object):
         fm.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
         fm.actions.append(of.ofp_action_nw_addr.set_dst(ipp.srcip))
 
-        if dns_hack:
-          fm.match.nw_src = self.dns_ip
+#        if dns_hack:
+#          fm.match.nw_src = self.dns_ip
           #FIXME: replace insipe ip with correct ip
-          fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
+#          fm.actions.append(of.ofp_action_nw_addr.set_src(self.inside_ip))
         log.debug("real srcport %s face srcport %s",record.real_srcport,record.fake_srcport)
         if record.fake_srcport != record.real_srcport:
           fm.actions.append(of.ofp_action_tp_port.set_dst(record.real_srcport))
@@ -571,8 +599,8 @@ class NAT (object):
         fm.match.in_port = event.port
         fm.actions.append(of.ofp_action_dl_addr.set_src(self._outside_eth))
         fm.actions.append(of.ofp_action_nw_addr.set_src(self.outside_ip))
-        if dns_hack:
-          fm.actions.append(of.ofp_action_nw_addr.set_dst(self.dns_ip))
+#        if dns_hack:
+#          fm.actions.append(of.ofp_action_nw_addr.set_dst(self.dns_ip))
         if record.fake_srcport != record.real_srcport:
           fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_srcport))
         fm.actions.append(of.ofp_action_dl_addr.set_dst(self._gateway_eth))

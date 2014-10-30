@@ -87,8 +87,7 @@ class Source (EventMixin):
     # In both cases, "component" is passed to the __init__ method for the
     # ComponentRegistered class.
 
-    # The above method invocation will raise an exception if an event
-    # handler rauses an exception.  To project yourself from exceptions in
+  To project yourself from exceptions in
     # handlers, see raiseEventNoErrors().
 """
 
