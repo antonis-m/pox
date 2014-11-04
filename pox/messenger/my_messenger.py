@@ -7,12 +7,13 @@ log = core.getLogger()
 
 
 class MessengerEvent (Event):
-    def __init__(self, router, router_nics, user_nics,
+    def __init__(self, router, router_nics, user_nics, rem_nics={},
                  join=False, leave=False):
         super(MessengerEvent, self).__init__()
         self.router = router
         self.router_nics = router_nics
         self.user_nics = user_nics
+        self.rem_nics = rem_nics
         self.join = join
         self.leave = leave
 
