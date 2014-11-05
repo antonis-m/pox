@@ -162,7 +162,6 @@ class NAT (object):
 
   def modify_router_nics(self, router_nics, user_nics, rem_nics):
     time.sleep(5)
-    print "startinggg"
     for x in router_nics.keys():
       mac = EthAddr(router_nics[x][0])
       #mac_prefix = router_nics[x][1]
@@ -173,7 +172,6 @@ class NAT (object):
           iface = str(y).split(":")[0]
           comm = "ovs-vsctl -- set Interface " + iface + " ofport_request="+str(net_id)
           os.system(comm)
-          print "done"
       if str(ip) == "10.0.10.3": #not self._is_local(ip):
         print "FUCK YOU BIG BOOOY"
         self.subnet = router_nics[x][4]
@@ -183,11 +181,6 @@ class NAT (object):
         self._outside_port_handling()
       else:
         self.inside_ips[net_id] = (ip, mac)
-        for port in self._connection.ports:
-          print self._connection
-          if self._connection.ports[port].hw_addr == str(mac):
-            print "mac exists"
-            #call(["ovs-vsctl"])
         for x in user_nics.keys():
           mac = EthAddr(user_nics[x][0])
           #mac_prefix = user_nics[x][1]
@@ -201,8 +194,9 @@ class NAT (object):
             print tcp_port
             print ip
         for x in rem_nics.keys():
-          if rem_nics[x] in self._managed_ips:
-            self._managed_ips.remove(rem_nics[x])
+          tup_to_check=(rem_nics[x][0], rem_nics[x][1], rem_nics[x][2])
+          if tup_to_check in self._managed_ips:
+            self._managed_ips.remove(tup_to_check)
             del self._mac_to_port[rem_nics[x][2]]
             port_to_remove = -1
             for z in self._forwarding.keys():
