@@ -23,8 +23,9 @@ in-band control with something like:
 
 """
 
-from threading import Timer
-from time import *
+import threading
+import time
+import os
 from pox.core import core
 import pox
 log = core.getLogger()
@@ -38,15 +39,15 @@ from pox.lib.addresses import EthAddr
 from pox.lib.util import str_to_bool, dpid_to_str, str_to_dpid
 from pox.lib.revent import EventMixin, Event
 from pox.lib.recoco import Timer
+from subprocess import call
 import pox.lib.recoco as recoco
 
 import pox.openflow.libopenflow_01 as of
-import pox.openflow.discovery
+import pox.openflow.discovery as disc
 import pox.proto.arp_helper as ah
 import pox.messenger as messenger
 import pox.messenger.tcp_transport as tcp_transport
 import pox.messenger.my_messenger as my_messenger
-import time
 import random
 
 FLOW_TIMEOUT = 60
@@ -103,6 +104,10 @@ class NAT (object):
     self.outside_ip = None
     self.gateway_ip = None
     self.inside_ips = {}
+    self.router_nics = None
+    self.user_nics = None
+    self.rem_nics = None
+    self.router_flag = False
 
     self._outside_portno = None
     self._gateway_eth = None
@@ -131,6 +136,9 @@ class NAT (object):
 
     core.listen_to_dependencies(self)
 
+  def _handle_PortStatus(self, event):
+    self._connection = event.connection
+
   def _handle_core_ComponentRegistered(self,event):
     print event.name
     if event.name == "messenger":
@@ -141,55 +149,51 @@ class NAT (object):
       if event.router == "yes":
          router_nics = event.router_nics
          user_nics = event.user_nics
-         rem_nics = {}
-         for x in router_nics.keys():
-            mac = EthAddr(router_nics[x][0])
-            #mac_prefix = router_nics[x][1]
-            ip = IPAddr(router_nics[x][2])
-            net_id = router_nics[x][5]
-            if str(ip) == "10.0.0.2": #not self._is_local(ip):
-              print "FUCK YOU BIG BOOOY"
-              self.subnet = router_nics[x][4]
-              self.outside_ip = ip
-              self.gateway_ip = IPAddr(router_nics[x][3])
-              self._outside_portno = net_id
-              self._outside_port_handling()
-            else:
-              self.inside_ips[net_id] = (ip, mac)
-         for x in user_nics.keys():
-           mac = EthAddr(user_nics[x][0])
-           #mac_prefix = user_nics[x][1]
-           ip = IPAddr(user_nics[x][2])
-           net_id = user_nics[x][5]
-           if (net_id, ip, mac) not in self._managed_ips:
-             tcp_port=self._pick_forwarding_port()
-             self._forwarding[tcp_port] = (net_id, ip, mac)
-             self._managed_ips.add((net_id, ip, mac))
-             self._mac_to_port[mac] = net_id
-             print tcp_port
-             print ip
-         for x in rem_nics.keys():
-           if rem_nics[x] in self._managed_ips:
-             self._managed_ips.remove(rem_nics[x])
-             del self._mac_to_port[rem_nics[x][2]]
-             port_to_remove = -1
-             for z in self._forwarding.keys():
-               if self._forwarding[z] == rem_nics[x]:
-                 port_to_remove = z
-               if port_to_remove != -1:
-                 del self._forwarding[port_to_remove]
-           elif self.inside_ips[rem_nics[x][0]] == (rem_nics[x][0],rem_nics[x][1]):
-             del self.inside_ips[rem_nics[x][0]]
-
-
+         rem_nics = event.rem_nics
+         t = threading.Thread(target=self.modify_router_nics, args=(router_nics,user_nics,rem_nics,))
+         t.daemon = True
+         t.start()
       else:
-        host_nics = event.host_nics
-        for x in host_nics.keys():
+         host_nics= event.user_nics
+         rem_nics = event.rem_nics
+         t = Threading.Thread(target=self.modify_host_nics, args=(host_nics,rem_nics,))
+         t.daemon = True
+         t.start()
+
+  def modify_router_nics(self, router_nics, user_nics, rem_nics):
+    time.sleep(5)
+    print "startinggg"
+    for x in router_nics.keys():
+      mac = EthAddr(router_nics[x][0])
+      #mac_prefix = router_nics[x][1]
+      ip = IPAddr(router_nics[x][2])
+      net_id = router_nics[x][5]
+      for x,y in self._connection.ports.iteritems():
+        if self._connection.ports[x].hw_addr == mac:
+          iface = str(y).split(":")[0]
+          comm = "ovs-vsctl -- set Interface " + iface + " ofport_request="+str(net_id)
+          os.system(comm)
+          print "done"
+      if str(ip) == "10.0.10.3": #not self._is_local(ip):
+        print "FUCK YOU BIG BOOOY"
+        self.subnet = router_nics[x][4]
+        self.outside_ip = ip
+        self.gateway_ip = IPAddr(router_nics[x][3])
+        self._outside_portno = net_id
+        self._outside_port_handling()
+      else:
+        self.inside_ips[net_id] = (ip, mac)
+        for port in self._connection.ports:
+          print self._connection
+          if self._connection.ports[port].hw_addr == str(mac):
+            print "mac exists"
+            #call(["ovs-vsctl"])
+        for x in user_nics.keys():
           mac = EthAddr(user_nics[x][0])
           #mac_prefix = user_nics[x][1]
           ip = IPAddr(user_nics[x][2])
           net_id = user_nics[x][5]
-          if (net_id, ip) not in self._managed_ips:
+          if (net_id, ip, mac) not in self._managed_ips:
             tcp_port=self._pick_forwarding_port()
             self._forwarding[tcp_port] = (net_id, ip, mac)
             self._managed_ips.add((net_id, ip, mac))
@@ -206,6 +210,32 @@ class NAT (object):
                 port_to_remove = z
               if port_to_remove != -1:
                 del self._forwarding[port_to_remove]
+          elif self.inside_ips[rem_nics[x][0]] == (rem_nics[x][0],rem_nics[x][1]):
+            del self.inside_ips[rem_nics[x][0]]
+
+  def modify_host_nics(self, host_nics, rem_nics):
+    for x in host_nics.keys():
+      mac = EthAddr(user_nics[x][0])
+      #mac_prefix = user_nics[x][1]
+      ip = IPAddr(user_nics[x][2])
+      net_id = user_nics[x][5]
+      if (net_id, ip) not in self._managed_ips:
+        tcp_port=self._pick_forwarding_port()
+        self._forwarding[tcp_port] = (net_id, ip, mac)
+        self._managed_ips.add((net_id, ip, mac))
+        self._mac_to_port[mac] = net_id
+        print tcp_port
+        print ip
+    for x in rem_nics.keys():
+      if rem_nics[x] in self._managed_ips:
+        self._managed_ips.remove(rem_nics[x])
+        del self._mac_to_port[rem_nics[x][2]]
+        port_to_remove = -1
+        for z in self._forwarding.keys():
+          if self._forwarding[z] == rem_nics[x]:
+            port_to_remove = z
+          if port_to_remove != -1:
+            del self._forwarding[port_to_remove]
 
   def _all_dependencies_met (self):
     log.debug('Trying to start...')
@@ -238,7 +268,7 @@ class NAT (object):
         if r.seq_id in self._icmp_records.keys():
           del self._icmp_records[r.seq_id]
           del self._icmp_seq[r.seq_id]
-     except:
+      except:
         pass
 
     if dead and not self._record_by_outgoing:
@@ -505,10 +535,7 @@ class NAT (object):
             fm.match.dl_src = packet.src
             fm.match.dl_dst = self._outside_eth
 
-            #fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._ip_to_port \
-            #        [self._forwarding[tcpp.dstport]]].hw_addr))
             fm.actions.append(of.ofp_action_dl_addr.set_src(self._connection.ports[self._forwarding[tcpp.dstport][0]].hw_addr))
-            #fm.actions.append(of.ofp_action_dl_addr.set_dst(self._ip_to_mac[self._forwarding[tcpp.dstport]]))
             fm.actions.append(of.ofp_action_dl_addr.set_dst(self._forwarding[tcpp.dstport][2]))
             fm.actions.append(of.ofp_action_nw_addr.set_dst(self._forwarding[tcpp.dstport][1]))
             fm.actions.append(of.ofp_action_tp_port.set_src(record.fake_dstport)) #fk_port to be added in a record

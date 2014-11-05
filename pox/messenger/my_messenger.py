@@ -38,13 +38,15 @@ class CycladesService (EventMixin):
 
     def _handle_MessageReceived(self, event, msg):
         if self.count == 0:
-            self.con.send(reply(msg,msg="send next message with router info "))
+            #self.con.send(reply(msg,msg="send next message with router info "))
             self.count += 1
         else:
             print "received message with new NIC_params. Updating router"
-            entry = MessengerEvent("yes",{"132":("aa:0d:f1:8a:88:fd","aa:bb:c","10.0.0.2","10.0.0.3","10.0.0.0/24",53),
-                                          "133":("aa:47:31:6b:86:e9","aa:bb:cc","192.168.0.2","192.168.0.2","192.168.0.0/24",50)},
-                                          {"145":("aa:47:32:e7:12:20",'aa:bb:cc','192.168.0.1','192.168.0.2','192.168.0.0/24',50)},True)
+            print event.msg["msg"]
+            entry = MessengerEvent(event.msg["msg"]["router"],
+                                   event.msg["msg"]["router_nics"],
+                                   event.msg["msg"]["user_nics"],
+                                   event.msg["msg"]["rem_nics"])
             self.raiseEventNoErrors(entry)
             print core.components["NAT"]._forwarding
             self.con.send(reply(msg,msg="OK"))
