@@ -43,10 +43,17 @@ class CycladesService (EventMixin):
         else:
             print "received message with new NIC_params. Updating router"
             print event.msg["msg"]
-            entry = MessengerEvent(event.msg["msg"]["router"],
-                                   event.msg["msg"]["router_nics"],
-                                   event.msg["msg"]["user_nics"],
-                                   event.msg["msg"]["rem_nics"])
+            if event.msg["msg"]["router"] == "yes":
+                entry = MessengerEvent(event.msg["msg"]["router"],
+                                       event.msg["msg"]["router_nics"],
+                                       event.msg["msg"]["user_nics"],
+                                       event.msg["msg"]["rem_nics"])
+            else:
+                entry = MessengerEvent(event.msg["msg"]["router"],
+                                       {},
+                                       event.msg["msg"]["host_nics"],
+                                       event.msg["msg"]["rem_nics"])
+
             self.raiseEventNoErrors(entry)
             print core.components["NAT"]._forwarding
             self.con.send(reply(msg,msg="OK"))

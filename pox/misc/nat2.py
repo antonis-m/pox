@@ -104,10 +104,6 @@ class NAT (object):
     self.outside_ip = None
     self.gateway_ip = None
     self.inside_ips = {}
-    self.router_nics = None
-    self.user_nics = None
-    self.rem_nics = None
-    self.router_flag = False
 
     self._outside_portno = None
     self._gateway_eth = None
@@ -156,23 +152,23 @@ class NAT (object):
       else:
          host_nics= event.user_nics
          rem_nics = event.rem_nics
-         t = Threading.Thread(target=self.modify_host_nics, args=(host_nics,rem_nics,))
+         t = threading.Thread(target=self.modify_host_nics, args=(host_nics,rem_nics,))
          t.daemon = True
          t.start()
 
   def modify_router_nics(self, router_nics, user_nics, rem_nics):
-    time.sleep(5)
+    time.sleep(6)
     for x in router_nics.keys():
       mac = EthAddr(router_nics[x][0])
       #mac_prefix = router_nics[x][1]
       ip = IPAddr(router_nics[x][2])
       net_id = router_nics[x][5]
-      for x,y in self._connection.ports.iteritems():
-        if self._connection.ports[x].hw_addr == mac:
+      for z,y in self._connection.ports.iteritems():
+        if self._connection.ports[z].hw_addr == mac:
           iface = str(y).split(":")[0]
           comm = "ovs-vsctl -- set Interface " + iface + " ofport_request="+str(net_id)
           os.system(comm)
-      if str(ip) == "10.0.10.3": #not self._is_local(ip):
+      if str(ip) == "10.2.1.2": #not self._is_local(ip):
         print "FUCK YOU BIG BOOOY"
         self.subnet = router_nics[x][4]
         self.outside_ip = ip
@@ -221,8 +217,9 @@ class NAT (object):
         print tcp_port
         print ip
     for x in rem_nics.keys():
-      if rem_nics[x] in self._managed_ips:
-        self._managed_ips.remove(rem_nics[x])
+      tup_to_check=(rem_nics[x][0], rem_nics[x][1], rem_nics[x][2])
+      if tup_to_check in self._managed_ips:
+        self._managed_ips.remove(tup_to_check)
         del self._mac_to_port[rem_nics[x][2]]
         port_to_remove = -1
         for z in self._forwarding.keys():
@@ -359,6 +356,12 @@ class NAT (object):
     return
 
   def _outside_port_handling(self):
+    fm = of.ofp_flow_mod()
+#    fm.match.dl_type = 0x86dd # IPv6
+    fm.match.in_port = self._outside_portno
+    fm.priority = 1
+    self._connection.send(fm)
+
     #process incoming traffic - to be processed by controller
     fm = of.ofp_flow_mod()
     fm.match.in_port = self._outside_portno
@@ -367,6 +370,7 @@ class NAT (object):
     fm.actions.append(of.ofp_action_output(port=of.OFPP_CONTROLLER))
     fm.priority = 2
     self._connection.send(fm)
+
 
     # Need to find gateway MAC -- send an ARP
     self._arp_for_gateway()
@@ -684,10 +688,13 @@ class NAT (object):
 
   def _arp_for_gateway (self):
     log.debug('Attempting to ARP for gateway (%s)', self.gateway_ip)
-    self._ARPHelper_.send_arp_request(self._connection,
-                                      ip = self.gateway_ip,
-                                      port = self._outside_portno,
-                                      src_ip = self.outside_ip)
+    try:
+        self._ARPHelper_.send_arp_request(self._connection,
+                                          ip = self.gateway_ip,
+                                          port = self._outside_portno,
+                                          src_ip = self.outside_ip)
+    except:
+        log.debug("OVS - connection not synced yet --- retry")
 #  def _arp_for_host(self, ip):
 #      log.debug("Attempting to ARP for host (%s)", ip)
 #      self._ARPHelper_.send_arp_request(self._connection,
