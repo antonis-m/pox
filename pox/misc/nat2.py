@@ -164,11 +164,14 @@ class NAT (object):
       ip = IPAddr(router_nics[x][2])
       net_id = router_nics[x][5]
       for z,y in self._connection.ports.iteritems():
-        if self._connection.ports[z].hw_addr == mac:
-          iface = str(y).split(":")[0]
-          comm = "ovs-vsctl -- set Interface " + iface + " ofport_request="+str(net_id)
-          os.system(comm)
-      if str(ip) == "10.2.1.2": #not self._is_local(ip):
+        try:
+          if self._connection.ports[z].hw_addr == mac:
+            iface = str(y).split(":")[0]
+            comm = "ovs-vsctl -- set Interface " + iface + " ofport_request="+str(net_id)
+            os.system(comm)
+        except:
+            log.debug("Changing port numbers")
+      if str(ip) == "10.2.1.3": #not self._is_local(ip):
         print "FUCK YOU BIG BOOOY"
         self.subnet = router_nics[x][4]
         self.outside_ip = ip
@@ -189,26 +192,27 @@ class NAT (object):
             self._mac_to_port[mac] = net_id
             print tcp_port
             print ip
-        for x in rem_nics.keys():
-          tup_to_check=(rem_nics[x][0], rem_nics[x][1], rem_nics[x][2])
-          if tup_to_check in self._managed_ips:
-            self._managed_ips.remove(tup_to_check)
-            del self._mac_to_port[rem_nics[x][2]]
-            port_to_remove = -1
-            for z in self._forwarding.keys():
-              if self._forwarding[z] == rem_nics[x]:
-                port_to_remove = z
+    for x in rem_nics.keys():
+      tup_to_check=(rem_nics[x][0], rem_nics[x][1], rem_nics[x][2])
+      for man_ip in self._managed_ips.copy():
+        if rem_nics[x][0] == man_ip[0]:
+          self._managed_ips.remove(man_ip)
+          del self._mac_to_port[man_ip[2]]
+          port_to_remove = -1
+          for z in self._forwarding.keys():
+            if self._forwarding[z][0] == rem_nics[x][0]:
+              port_to_remove = z
               if port_to_remove != -1:
                 del self._forwarding[port_to_remove]
-          elif self.inside_ips[rem_nics[x][0]] == (rem_nics[x][0],rem_nics[x][1]):
-            del self.inside_ips[rem_nics[x][0]]
+      if rem_nics[x][0] in self.inside_ips and self.inside_ips[rem_nics[x][0]] == (rem_nics[x][0],rem_nics[x][1]):
+        del self.inside_ips[rem_nics[x][0]]
 
   def modify_host_nics(self, host_nics, rem_nics):
     for x in host_nics.keys():
-      mac = EthAddr(user_nics[x][0])
+      mac = EthAddr(host_nics[x][0])
       #mac_prefix = user_nics[x][1]
-      ip = IPAddr(user_nics[x][2])
-      net_id = user_nics[x][5]
+      ip = IPAddr(host_nics[x][2])
+      net_id = host_nics[x][4]
       if (net_id, ip) not in self._managed_ips:
         tcp_port=self._pick_forwarding_port()
         self._forwarding[tcp_port] = (net_id, ip, mac)
@@ -223,7 +227,7 @@ class NAT (object):
         del self._mac_to_port[rem_nics[x][2]]
         port_to_remove = -1
         for z in self._forwarding.keys():
-          if self._forwarding[z] == rem_nics[x]:
+          if self._forwarding[z] == tup_to_check:
             port_to_remove = z
           if port_to_remove != -1:
             del self._forwarding[port_to_remove]
@@ -590,7 +594,7 @@ class NAT (object):
         if ipp.dstip in inside_ips or ipp.dstip == str(self.outside_ip):
           self.respond_to_icmp(event)
           return
-        elif self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
+        elif not self._is_local(ipp.dstip):   #THERE USED TO BE A NOT THERE IN CASE WE WANT TO PING PUBLIC IPS
           #Logic for mangling outgoing icmp
           #first delete stale sequence numbers - this only allows one session to ping
           #self._icmp_seq = {k:v for k,v in self._icmp_seq.iteritems() if v != ipp.srcip}
@@ -688,13 +692,17 @@ class NAT (object):
 
   def _arp_for_gateway (self):
     log.debug('Attempting to ARP for gateway (%s)', self.gateway_ip)
-    try:
-        self._ARPHelper_.send_arp_request(self._connection,
-                                          ip = self.gateway_ip,
-                                          port = self._outside_portno,
-                                          src_ip = self.outside_ip)
-    except:
-        log.debug("OVS - connection not synced yet --- retry")
+    done = False
+    while not done:
+      try:
+          self._ARPHelper_.send_arp_request(self._connection,
+                                            ip = self.gateway_ip,
+                                            port = self._outside_portno,
+                                            src_ip = self.outside_ip)
+          done = True
+      except:
+          log.debug("OVS - connection not synced yet --- retry")
+          time.sleep(1)
 #  def _arp_for_host(self, ip):
 #      log.debug("Attempting to ARP for host (%s)", ip)
 #      self._ARPHelper_.send_arp_request(self._connection,
